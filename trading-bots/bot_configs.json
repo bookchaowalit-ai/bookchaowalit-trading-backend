@@ -1,0 +1,210 @@
+[
+  {
+    "id": "btc_scalper_binance",
+    "name": "BTC Scalper",
+    "platform": "binance",
+    "market": "crypto",
+    "strategy": "grid",
+    "symbols": [
+      "BTC/USDT"
+    ],
+    "config": {
+      "grid_levels": 10,
+      "grid_spacing": 0.005,
+      "base_order_size": 50,
+      "max_position_size": 1000,
+      "risk_per_trade": 0.02,
+      "stop_loss": 0.03,
+      "take_profit": 0.06
+    }
+  },
+  {
+    "id": "eth_grid_binance",
+    "name": "ETH Grid Bot",
+    "platform": "binance",
+    "market": "crypto",
+    "strategy": "grid",
+    "symbols": [
+      "ETH/USDT"
+    ],
+    "config": {
+      "grid_levels": 12,
+      "grid_spacing": 0.008,
+      "base_order_size": 75,
+      "max_position_size": 800,
+      "risk_per_trade": 0.015
+    }
+  },
+  {
+    "id": "ada_dca_binance",
+    "name": "ADA DCA Bot",
+    "platform": "binance",
+    "market": "crypto",
+    "strategy": "momentum",
+    "symbols": [
+      "ADA/USDT"
+    ],
+    "config": {
+      "rsi_period": 14,
+      "ma_short": 8,
+      "ma_long": 21,
+      "rsi_oversold": 35,
+      "rsi_overbought": 65,
+      "max_position_size": 500,
+      "risk_per_trade": 0.01
+    }
+  },
+  {
+    "id": "btc_long_coinbase",
+    "name": "BTC Long Term",
+    "platform": "coinbase",
+    "market": "crypto",
+    "strategy": "momentum",
+    "symbols": [
+      "BTC/USD"
+    ],
+    "config": {
+      "rsi_period": 21,
+      "ma_short": 20,
+      "ma_long": 50,
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
+      "max_position_size": 1200,
+      "risk_per_trade": 0.025
+    }
+  },
+  {
+    "id": "eth_swing_coinbase",
+    "name": "ETH Swing",
+    "platform": "coinbase",
+    "market": "crypto",
+    "strategy": "momentum",
+    "symbols": [
+      "ETH/USD"
+    ],
+    "config": {
+      "rsi_period": 14,
+      "ma_short": 12,
+      "ma_long": 26,
+      "rsi_oversold": 25,
+      "rsi_overbought": 75,
+      "max_position_size": 900,
+      "risk_per_trade": 0.02
+    }
+  },
+  {
+    "id": "ptt_momentum_innovestx",
+    "name": "PTT Momentum",
+    "platform": "innovestx",
+    "market": "stock",
+    "strategy": "momentum",
+    "symbols": [
+      "PTT"
+    ],
+    "config": {
+      "rsi_period": 14,
+      "ma_short": 10,
+      "ma_long": 30,
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
+      "max_position_size": 50000,
+      "risk_per_trade": 0.02
+    }
+  },
+  {
+    "id": "cpall_grid_innovestx",
+    "name": "CPALL Grid Bot",
+    "platform": "innovestx",
+    "market": "stock",
+    "strategy": "grid",
+    "symbols": [
+      "CPALL"
+    ],
+    "config": {
+      "grid_levels": 8,
+      "grid_spacing": 0.015,
+      "base_order_size": 100,
+      "max_position_size": 30000,
+      "risk_per_trade": 0.015
+    }
+  },
+  {
+    "id": "kbank_swing_innovestx",
+    "name": "KBANK Swing",
+    "platform": "innovestx",
+    "market": "stock",
+    "strategy": "momentum",
+    "symbols": [
+      "KBANK"
+    ],
+    "config": {
+      "rsi_period": 21,
+      "ma_short": 15,
+      "ma_long": 35,
+      "rsi_oversold": 25,
+      "rsi_overbought": 75,
+      "max_position_size": 40000,
+      "risk_per_trade": 0.018
+    }
+  },
+  {
+    "id": "thai_multi_sector_innovestx",
+    "name": "Thai Multi-Sector Bot",
+    "platform": "innovestx",
+    "market": "stock",
+    "strategy": "thai_stock",
+    "symbols": [
+      "PTT",
+      "KBANK",
+      "CPALL",
+      "ADVANC"
+    ],
+    "config": {
+      "rsi_period": 14,
+      "ma_short": 5,
+      "ma_long": 20,
+      "volume_ma_period": 10,
+      "volatility_threshold": 0.025,
+      "max_position_size": 50000,
+      "risk_per_trade": 0.02
+    }
+  },
+  {
+    "id": "btc_grid_binance_th",
+    "name": "BTC Grid Binance TH",
+    "platform": "binance_th",
+    "market": "crypto",
+    "strategy": "grid",
+    "symbols": [
+      "BTC/USDT"
+    ],
+    "config": {
+      "grid_levels": 8,
+      "grid_spacing": 0.01,
+      "base_order_size": 1000,
+      "max_position_size": 20000,
+      "risk_per_trade": 0.02,
+      "stop_loss": 0.05,
+      "take_profit": 0.08
+    }
+  },
+  {
+    "id": "eth_momentum_binance_th",
+    "name": "ETH Momentum Binance TH",
+    "platform": "binance_th",
+    "market": "crypto",
+    "strategy": "momentum",
+    "symbols": [
+      "ETH/USDT"
+    ],
+    "config": {
+      "rsi_period": 14,
+      "ma_short": 10,
+      "ma_long": 25,
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
+      "max_position_size": 15000,
+      "risk_per_trade": 0.015
+    }
+  }
+]
