@@ -48,7 +48,7 @@ Successfully migrated the entire trading bot system from Supabase to Neon Postgr
 
 ## Database Connection Details
 - **Provider**: Neon PostgreSQL
-- **Connection**: `postgresql://neondb_owner:npg_hjPtSl2E0cqz@ep-divine-breeze-a1pi1zf0-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require`
+- **Connection**: `postgresql://neondb_owner:REDACTED_ROTATE_THIS_PASSWORD@ep-divine-breeze-a1pi1zf0-pooler.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require`
 - **Platforms Registered**: 8 trading platforms (Binance, Coinbase, Bybit, Bitkub, Kraken, Alpaca, OANDA, InnovestX)
 
 ## Testing Results
