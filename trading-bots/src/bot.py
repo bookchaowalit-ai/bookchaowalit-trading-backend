@@ -15,6 +15,7 @@ from .exchanges.binance_exchange import BinanceExchange
 from .exchanges.binance_th_exchange import BinanceThExchange
 from .exchanges.bitkub_exchange import BitkubExchange
 from .exchanges.innovestx_exchange import InnovestXExchange
+from .exchanges.paper_exchange import PaperExchange
 from .strategies.base_strategy import BaseStrategy, Position, Signal
 from .strategies.grid_strategy import GridTradingStrategy
 from .strategies.momentum_strategy import MomentumStrategy
@@ -153,20 +154,30 @@ class TradingBot:
         self.bot_id = await self.db.register_bot(bot_data)
 
     def _create_exchange(self) -> BaseExchange:
-        """Create exchange connector based on platform."""
+        """Create exchange connector based on platform.
+
+        Unless ``TRADING_MODE=live`` is set explicitly, the connector is wrapped
+        in ``PaperExchange`` so no order ever reaches a real account.
+        """
         exchange_config = Config.get_exchange_config(self.platform)
 
         if self.platform == "binance":
-            return BinanceExchange(exchange_config)
+            exchange = BinanceExchange(exchange_config)
         elif self.platform == "binance_th":
-            return BinanceThExchange(exchange_config)
+            exchange = BinanceThExchange(exchange_config)
         elif self.platform == "bitkub":
-            return BitkubExchange(exchange_config)
+            exchange = BitkubExchange(exchange_config)
         elif self.platform == "innovestx":
-            return InnovestXExchange(exchange_config)
+            exchange = InnovestXExchange(exchange_config)
         # Add other exchanges here
         else:
             raise ValueError(f"Unsupported platform: {self.platform}")
+
+        if not Config.LIVE_TRADING:
+            logger.info(f"Bot {self.name}: paper mode, orders are simulated")
+            return PaperExchange(exchange)
+        logger.warning(f"Bot {self.name}: LIVE trading on {self.platform}")
+        return exchange
 
     def _create_strategy(self) -> BaseStrategy:
         """Create trading strategy based on configuration."""
@@ -230,61 +241,36 @@ class TradingBot:
             # Here we'll create a simple data point
             current_time = datetime.now()
 
-            # Create or update DataFrame
+            new_row = pd.DataFrame(
+                {
+                    "timestamp": [current_time],
+                    "open": [ticker.last],
+                    "high": [ticker.last],
+                    "low": [ticker.last],
+                    "close": [ticker.last],
+                    "volume": [ticker.volume],
+                }
+            )
+
+            # Only real observed ticks are used. Strategies wait until enough
+            # history has accumulated instead of trading on fabricated bars.
             if symbol not in self.strategy.historical_data:
-                # Initialize with some dummy data for demonstration
-                dates = pd.date_range(end=current_time, periods=100, freq="1H")
-                base_price = ticker.last
-
-                # Generate realistic OHLCV data
-                np_random = pd.np.random
-                price_changes = np_random.normal(0, 0.02, 100)  # 2% volatility
-                prices = [base_price]
-
-                for change in price_changes[1:]:
-                    prices.append(prices[-1] * (1 + change))
-
-                df = pd.DataFrame(
-                    {
-                        "timestamp": dates,
-                        "open": prices,
-                        "high": [
-                            p * (1 + abs(np_random.normal(0, 0.01))) for p in prices
-                        ],
-                        "low": [
-                            p * (1 - abs(np_random.normal(0, 0.01))) for p in prices
-                        ],
-                        "close": prices,
-                        "volume": np_random.uniform(1000, 10000, 100),
-                    }
-                )
-
-                self.strategy.update_historical_data(symbol, df)
+                df = new_row
             else:
-                # Update existing data with new tick
-                df = self.strategy.historical_data[symbol].copy()
-                new_row = pd.DataFrame(
-                    {
-                        "timestamp": [current_time],
-                        "open": [ticker.last],
-                        "high": [ticker.last],
-                        "low": [ticker.last],
-                        "close": [ticker.last],
-                        "volume": [ticker.volume],
-                    }
+                df = pd.concat(
+                    [self.strategy.historical_data[symbol], new_row], ignore_index=True
                 )
-
-                df = pd.concat([df, new_row], ignore_index=True)
                 df = df.tail(1000)  # Keep last 1000 data points
 
-                self.strategy.update_historical_data(symbol, df)
+            self.strategy.update_historical_data(symbol, df)
 
         except Exception as e:
             logger.error(f"Failed to update market data for {symbol}: {e}")
 
     async def _manage_positions(self):
         """Manage existing positions."""
-        for symbol, position in self.strategy.positions.items():
+        # Iterate over a snapshot: closing a position mutates the dict.
+        for symbol, position in list(self.strategy.positions.items()):
             try:
                 # Get current price
                 ticker = await self.exchange.get_ticker(symbol)
@@ -307,17 +293,34 @@ class TradingBot:
                 f"Executing {signal.action} signal for {signal.symbol} at ${signal.price:.4f}"
             )
 
-            # Check balance before trading
-            balance = await self.exchange.get_balance()
+            if not signal.amount or signal.amount <= 0 or not signal.price or signal.price <= 0:
+                logger.warning(f"Skipping {signal.action} for {signal.symbol}: invalid amount/price")
+                return
+
+            held = self.strategy.positions.get(signal.symbol)
+            amount = signal.amount
+            if signal.action == "sell":
+                # Spot, long-only: never sell inventory the bot does not hold.
+                if held is None or held.amount <= 0:
+                    logger.info(f"Skipping sell for {signal.symbol}: no open position")
+                    return
+                amount = min(amount, held.amount)
 
             # Execute the order
             order_result = await self.exchange.place_order(
                 symbol=signal.symbol,
                 side=signal.action,
-                amount=signal.amount,
+                amount=amount,
                 price=signal.price,
                 order_type="market",
             )
+
+            realized_pnl = 0.0
+            if signal.action == "sell":
+                realized_pnl = (
+                    (order_result.price - held.entry_price) * order_result.amount
+                    - (order_result.fees or 0.0)
+                )
 
             # Record trade in database
             trade_data = {
@@ -327,24 +330,42 @@ class TradingBot:
                 "side": signal.action,
                 "amount": order_result.amount,
                 "price": order_result.price,
-                "pnl": 0.0,  # Will be calculated later
+                "pnl": realized_pnl,
                 "timestamp": datetime.utcnow().isoformat(),
             }
 
             await self.db.insert_trade(trade_data)
 
-            # Update strategy position tracking
+            # Update strategy position tracking (one aggregated long per symbol)
             if signal.action == "buy":
-                position = Position(
-                    symbol=signal.symbol,
-                    side="long",
-                    amount=order_result.amount,
-                    entry_price=order_result.price,
-                    current_price=order_result.price,
-                    pnl=0.0,
-                    timestamp=datetime.now(),
-                )
-                self.strategy.add_position(position)
+                if held is not None and held.amount > 0:
+                    total = held.amount + order_result.amount
+                    held.entry_price = (
+                        held.entry_price * held.amount
+                        + order_result.price * order_result.amount
+                    ) / total
+                    held.amount = total
+                    held.current_price = order_result.price
+                else:
+                    self.strategy.add_position(
+                        Position(
+                            symbol=signal.symbol,
+                            side="long",
+                            amount=order_result.amount,
+                            entry_price=order_result.price,
+                            current_price=order_result.price,
+                            pnl=0.0,
+                            timestamp=datetime.now(),
+                        )
+                    )
+            else:
+                held.amount -= order_result.amount
+                if held.amount <= 1e-12:
+                    self.strategy.remove_position(signal.symbol)
+                self.performance_metrics["total_pnl"] += realized_pnl
+                self.performance_metrics["today_pnl"] += realized_pnl
+                if realized_pnl > 0:
+                    self.performance_metrics["winning_trades"] += 1
 
             # Update performance metrics
             self.performance_metrics["total_trades"] += 1
