@@ -4,14 +4,13 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, utc_from_ms, utc_now
 
 
 # Bitkub quotes every market in THB with 2 decimals; base assets use up to 8.
@@ -298,7 +297,7 @@ class BitkubExchange(BaseExchange):
                 ask=float(data.get("lowestAsk", 0)),
                 last=float(data.get("last", 0)),
                 volume=float(data.get("baseVolume", 0)),
-                timestamp=datetime.now(),
+                timestamp=utc_now(),
             )
 
         except Exception as e:
@@ -341,7 +340,7 @@ class BitkubExchange(BaseExchange):
                 status="pending",  # Bitkub orders start as pending
                 filled_amount=0.0,
                 fees=0.0,
-                timestamp=datetime.now(),
+                timestamp=utc_now(),
             )
 
         except Exception as e:
@@ -411,9 +410,7 @@ class BitkubExchange(BaseExchange):
                         status="open",
                         filled_amount=float(order_data.get("filled", 0)),
                         fees=float(order_data.get("fee", 0)),
-                        timestamp=datetime.fromtimestamp(
-                            order_data.get("ts", 0) / 1000
-                        ),
+                        timestamp=utc_from_ms(order_data.get("ts", 0)),
                     )
                 )
 
@@ -451,9 +448,7 @@ class BitkubExchange(BaseExchange):
                         status=order_data.get("status", ""),
                         filled_amount=float(order_data.get("filled", 0)),
                         fees=float(order_data.get("fee", 0)),
-                        timestamp=datetime.fromtimestamp(
-                            order_data.get("ts", 0) / 1000
-                        ),
+                        timestamp=utc_from_ms(order_data.get("ts", 0)),
                     )
                 )
 

@@ -1,12 +1,11 @@
 """Binance exchange connector."""
 
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import ccxt.async_support as ccxt
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame, utc_from_ms
 
 
 class BinanceExchange(BaseExchange):
@@ -79,9 +78,7 @@ class BinanceExchange(BaseExchange):
                 ask=ticker_data.get("ask", 0.0),
                 last=ticker_data.get("last", 0.0),
                 volume=ticker_data.get("baseVolume", 0.0),
-                timestamp=datetime.fromtimestamp(
-                    ticker_data.get("timestamp", 0) / 1000
-                ),
+                timestamp=utc_from_ms(ticker_data.get("timestamp", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to get Binance ticker for {symbol}: {e}")
@@ -118,7 +115,7 @@ class BinanceExchange(BaseExchange):
                 status=order.get("status", "pending"),
                 filled_amount=order.get("filled", 0.0),
                 fees=order.get("fee", {}).get("cost", 0.0),
-                timestamp=datetime.fromtimestamp(order.get("timestamp", 0) / 1000),
+                timestamp=utc_from_ms(order.get("timestamp", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to place Binance order: {e}")
@@ -147,7 +144,7 @@ class BinanceExchange(BaseExchange):
                 status=order.get("status", "unknown"),
                 filled_amount=order.get("filled", 0.0),
                 fees=order.get("fee", {}).get("cost", 0.0),
-                timestamp=datetime.fromtimestamp(order.get("timestamp", 0) / 1000),
+                timestamp=utc_from_ms(order.get("timestamp", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to get Binance order status: {e}")
@@ -167,7 +164,7 @@ class BinanceExchange(BaseExchange):
                     status=order.get("status", "open"),
                     filled_amount=order.get("filled", 0.0),
                     fees=order.get("fee", {}).get("cost", 0.0),
-                    timestamp=datetime.fromtimestamp(order.get("timestamp", 0) / 1000),
+                    timestamp=utc_from_ms(order.get("timestamp", 0)),
                 )
                 for order in orders
             ]
@@ -191,7 +188,7 @@ class BinanceExchange(BaseExchange):
                     status=order.get("status", "unknown"),
                     filled_amount=order.get("filled", 0.0),
                     fees=order.get("fee", {}).get("cost", 0.0),
-                    timestamp=datetime.fromtimestamp(order.get("timestamp", 0) / 1000),
+                    timestamp=utc_from_ms(order.get("timestamp", 0)),
                 )
                 for order in orders
             ]

@@ -3,9 +3,25 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Optional, Any, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
+
+
+def utc_from_ms(ms: Any) -> datetime:
+    """Exchange epoch milliseconds as a naive UTC ``datetime``.
+
+    Naive UTC is the convention of ``datetime.utcnow()`` used by the paper
+    exchange and the database layer. ``fromtimestamp()`` without a
+    tz returns host-local time, so live orders were stamped hours away from
+    paper orders and ``created_at`` on any non-UTC host.
+    """
+    return datetime.fromtimestamp((ms or 0) / 1000, tz=timezone.utc).replace(tzinfo=None)
+
+
+def utc_now() -> datetime:
+    """Current time as naive UTC (same convention as :func:`utc_from_ms`)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass

@@ -56,6 +56,11 @@ connector. It is still unfit for real money (see P0).
 - Tests: `test_each_closed_bar_is_analysed_once` (fails without the fix)
   and `test_tick_fallback_is_analysed_every_cycle` in `tests/test_ohlcv.py`.
   Full suite 60 passed; CI ruff gate clean. Paper mode only.
+- Exchange timestamps: Binance, Binance TH and Bitkub epoch-ms values go
+  through `base_exchange.utc_from_ms` (naive UTC, the `utcnow()` convention
+  of the paper exchange and database) instead of host-local
+  `datetime.fromtimestamp`; Bitkub order stamps use `utc_now()`.
+  `tests/test_utc_timestamps.py` (3 tests, run under TZ=Asia/Bangkok).
 
 ## Done in pass 3
 - OHLCV P0: `BaseExchange.get_ohlcv()` (default `None`) with helpers

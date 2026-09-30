@@ -4,14 +4,13 @@ import asyncio
 import hashlib
 import hmac
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 import aiohttp
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame, utc_from_ms
 
 
 class BinanceThExchange(BaseExchange):
@@ -158,7 +157,7 @@ class BinanceThExchange(BaseExchange):
                 ask=float(data.get("askPrice", 0)),
                 last=float(data.get("lastPrice", 0)),
                 volume=float(data.get("volume", 0)),
-                timestamp=datetime.fromtimestamp(data.get("closeTime", 0) / 1000),
+                timestamp=utc_from_ms(data.get("closeTime", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to get Binance TH ticker for {symbol}: {e}")
@@ -205,7 +204,7 @@ class BinanceThExchange(BaseExchange):
                 fees=sum(
                     float(fill.get("commission", 0)) for fill in data.get("fills", [])
                 ),
-                timestamp=datetime.fromtimestamp(data.get("transactTime", 0) / 1000),
+                timestamp=utc_from_ms(data.get("transactTime", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to place order on Binance TH: {e}")
@@ -239,7 +238,7 @@ class BinanceThExchange(BaseExchange):
                 status=self._convert_order_status(data["status"]),
                 filled_amount=float(data["executedQty"]),
                 fees=0.0,  # Would need separate API call to get fees
-                timestamp=datetime.fromtimestamp(data.get("time", 0) / 1000),
+                timestamp=utc_from_ms(data.get("time", 0)),
             )
         except Exception as e:
             logger.error(f"Failed to get order status for {order_id}: {e}")
@@ -268,9 +267,7 @@ class BinanceThExchange(BaseExchange):
                         status=self._convert_order_status(order_data["status"]),
                         filled_amount=float(order_data["executedQty"]),
                         fees=0.0,
-                        timestamp=datetime.fromtimestamp(
-                            order_data.get("time", 0) / 1000
-                        ),
+                        timestamp=utc_from_ms(order_data.get("time", 0)),
                     )
                 )
 
@@ -304,9 +301,7 @@ class BinanceThExchange(BaseExchange):
                         status=self._convert_order_status(order_data["status"]),
                         filled_amount=float(order_data["executedQty"]),
                         fees=0.0,
-                        timestamp=datetime.fromtimestamp(
-                            order_data.get("time", 0) / 1000
-                        ),
+                        timestamp=utc_from_ms(order_data.get("time", 0)),
                     )
                 )
 
