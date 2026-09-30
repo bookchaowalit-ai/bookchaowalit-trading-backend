@@ -9,7 +9,7 @@ from datetime import datetime
 import pytest
 
 from src.exchanges.base_exchange import Ticker
-from src.exchanges.bitkub_exchange import BitkubExchange, bitkub_order_payload
+from src.exchanges.bitkub_exchange import BitkubExchange, bitkub_order_payload, order_result_price
 from src.exchanges.paper_exchange import PaperExchange
 
 
@@ -63,9 +63,10 @@ def test_unknown_side_rejected():
 class RecordingBitkub(BitkubExchange):
     """Bitkub connector whose network layer is replaced by a recorder."""
 
-    def __init__(self, price):
+    def __init__(self, price, response=None):
         super().__init__({"apiKey": "unused", "secret": "unused"})
         self.price = price
+        self.response = response if response is not None else {"id": 1}
         self.requests = []
 
     async def get_ticker(self, symbol):
@@ -74,7 +75,7 @@ class RecordingBitkub(BitkubExchange):
 
     async def _make_request(self, method, endpoint, data=None):
         self.requests.append((endpoint, data))
-        return {"error": 0, "result": {"id": 1}}
+        return {"error": 0, "result": self.response}
 
 
 @pytest.mark.asyncio
@@ -105,3 +106,41 @@ async def test_paper_mode_never_reaches_the_bitkub_order_endpoint():
     # Paper accounting uses the same unit rule: THB debited = base qty * price.
     assert paper.balances["BTC"] == pytest.approx(0.001)
     assert paper.balances["THB"] == pytest.approx(10_000 - 2_000 - 5)
+
+
+# Entry price of a placed order: live position/PnL accounting reads
+# OrderResult.price, so a market order must never report 0.
+
+
+@pytest.mark.asyncio
+async def test_market_buy_result_price_is_the_ask_not_zero():
+    # Bitkub echoes rat=0 for market orders.
+    ex = RecordingBitkub(price=2_000_000.0, response={"id": 7, "typ": "market", "rat": 0})
+    result = await ex.place_order("THB_BTC", "buy", 0.001)
+    assert result.price == pytest.approx(2_000_000.0)
+
+
+@pytest.mark.asyncio
+async def test_market_sell_result_price_is_the_bid():
+    ex = RecordingBitkub(price=2_000_000.0)
+    result = await ex.place_order("THB_BTC", "sell", 0.001)
+    assert result.price == pytest.approx(2_000_000.0 * 0.999)
+
+
+@pytest.mark.asyncio
+async def test_result_price_prefers_the_rate_bitkub_echoes():
+    ex = RecordingBitkub(price=2_000_000.0, response={"id": 8, "rat": 2_001_500.0})
+    result = await ex.place_order("THB_BTC", "buy", 0.001)
+    assert result.price == pytest.approx(2_001_500.0)
+
+
+@pytest.mark.asyncio
+async def test_limit_result_price_is_the_limit_price():
+    ex = RecordingBitkub(price=2_000_000.0)
+    result = await ex.place_order("THB_BTC", "buy", 0.001, price=1_900_000.0, order_type="limit")
+    assert result.price == pytest.approx(1_900_000.0)
+
+
+@pytest.mark.parametrize("rat", [None, "", "not-a-number", -5])
+def test_order_result_price_ignores_unusable_echoed_rates(rat):
+    assert order_result_price({"rat": rat}, "market", None, 123.0) == 123.0

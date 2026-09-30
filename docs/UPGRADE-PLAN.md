@@ -50,6 +50,12 @@ connector. It is still unfit for real money (see P0).
 - `tests/test_ohlcv.py` (9 offline tests, network layer faked). Full suite:
   50 passed; CI ruff gate clean. Paper mode only; no credentials used. The
   leaked Neon password still needs a manual rotation (not doable here).
+- Review fix: Bitkub `place_order` no longer returns `OrderResult.price=0`
+  for market orders (live position/PnL used 0 as the entry). New
+  `order_result_price()`: echoed `rat` when positive, else the limit price,
+  else the ticker reference used to size the order (ask for buys, bid for
+  sells, last as fallback). 8 offline tests with a faked network layer;
+  full suite 58 passed, CI ruff gate clean.
 
 ## Done in pass 1
 - Real orders now need an explicit `TRADING_MODE=live`. Every connector is

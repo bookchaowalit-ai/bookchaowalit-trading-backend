@@ -73,6 +73,28 @@ def bitkub_order_payload(
     return body
 
 
+def order_result_price(
+    response: dict, order_type: str, limit_price: Optional[float], reference_price: float
+) -> float:
+    """Price to record for a freshly placed Bitkub order.
+
+    Position and PnL accounting use ``OrderResult.price`` as the entry price,
+    so it must never be 0 for an order that was accepted. Preference order:
+    the rate Bitkub echoes back (``rat``) when it is positive, then the limit
+    price for limit orders, then the ticker reference used to size a market
+    order (ask for buys, bid for sells, falling back to last).
+    """
+    try:
+        echoed = float(response.get("rat") or 0)
+    except (TypeError, ValueError):
+        echoed = 0.0
+    if echoed > 0:
+        return echoed
+    if order_type == "limit" and limit_price:
+        return float(limit_price)
+    return float(reference_price or 0)
+
+
 class BitkubExchange(BaseExchange):
     """Bitkub exchange connector for crypto trading."""
 
@@ -315,7 +337,7 @@ class BitkubExchange(BaseExchange):
                 symbol=symbol,
                 side=side,
                 amount=amount,
-                price=price or 0,
+                price=order_result_price(order_result, order_type, price, reference_price),
                 status="pending",  # Bitkub orders start as pending
                 filled_amount=0.0,
                 fees=0.0,
