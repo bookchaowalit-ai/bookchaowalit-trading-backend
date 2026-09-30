@@ -2,7 +2,7 @@
 
 ## Current state
 
-**Score: 4 / 10** (was 2 before pass 1). A prototype multi-exchange bot
+**Score: 4.5 / 10** (4 after pass 1, 2 before). Bitkub order units are now explicit and tested. A prototype multi-exchange bot
 runner. It now has offline tests, CI, and paper mode enforced for every
 connector. It is still unfit for real money (see P0).
 
@@ -12,13 +12,15 @@ connector. It is still unfit for real money (see P0).
 - **Rotate the Neon database password.** An unredacted `npg_...` password
   sits in git history (commit `b9b30ce`, `NEON_MIGRATION_COMPLETE.md`). The
   HEAD redaction does not remove it from history.
-- The Bitkub connector sends `amt` for buys in THB (quote currency), while
-  strategies emit base-asset quantities. Convert per exchange before
-  `TRADING_MODE=live` is ever used with Bitkub.
 - Strategies seed from ticks captured once a minute, not from OHLCV. Fetch
   real klines (for example ccxt `fetch_ohlcv`) so indicators see true bars.
 
 ### P1
+- Bitkub connector still targets the legacy `THB_BTC` symbols and v1/v2
+  endpoints; confirm against the current Bitkub API (v3 uses `btc_thb`) with
+  a recorded fixture before any live use. Market-buy THB is derived from the
+  current ask, so the filled base quantity can differ slightly; reconcile
+  fills from the order history.
 - Momentum and Thai-stock strategies size positions from a hard-coded
   balance (10k / 100k). Pass the real (or paper) balance in.
 - `GridTradingStrategy.update_grid_after_fill` is never called, so grid
@@ -46,3 +48,17 @@ connector. It is still unfit for real money (see P0).
   includes fees. Fixed the dict-mutation crash in `_manage_positions`.
 - Untracked the committed `.pyc` files and logs. Added offline pytest suite
   (27 tests), `requirements-test.txt`, and a GitHub Actions CI workflow.
+
+## Done in this pass (pass 2)
+- Bitkub units made explicit: `bitkub_order_payload()` in
+  `src/exchanges/bitkub_exchange.py` takes a base-asset quantity (the
+  `BaseExchange` contract) and sends `amt` in THB for `place-bid`
+  (`qty * limit rate` or `qty * current ask`) and in base units for
+  `place-ask`. Amounts round down (THB 2 dp, base 8 dp), sub-10 THB orders,
+  non-positive amounts and unknown sides/types are rejected.
+- `tests/test_bitkub_units.py` (15 tests, offline, network layer replaced):
+  conversion, rounding, rejection, connector request bodies, and that paper
+  mode never reaches the Bitkub order endpoint while debiting THB with the
+  same unit rule. Full suite: 41 passed; ruff clean on the touched files
+  (also removed an unused import and a bare `except`). No live orders were
+  placed and no credentials were used.
