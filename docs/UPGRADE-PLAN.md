@@ -2,7 +2,7 @@
 
 ## Current state
 
-**Score: 4.5 / 10** (4 after pass 1, 2 before). Bitkub order units are now explicit and tested. A prototype multi-exchange bot
+**Score: 5 / 10** (4.5 after pass 2, 4 after pass 1, 2 before). Strategies now analyse closed exchange klines instead of one tick per minute. A prototype multi-exchange bot
 runner. It now has offline tests, CI, and paper mode enforced for every
 connector. It is still unfit for real money (see P0).
 
@@ -12,10 +12,12 @@ connector. It is still unfit for real money (see P0).
 - **Rotate the Neon database password.** An unredacted `npg_...` password
   sits in git history (commit `b9b30ce`, `NEON_MIGRATION_COMPLETE.md`). The
   HEAD redaction does not remove it from history.
-- Strategies seed from ticks captured once a minute, not from OHLCV. Fetch
-  real klines (for example ccxt `fetch_ohlcv`) so indicators see true bars.
 
 ### P1
+- Klines for Bitkub (`/tradingview/history`) and InnovestX so they stop
+  falling back to one tick per cycle; record a fixture per exchange first.
+- Run the trading cycle on bar close (align the 60 s sleep to `timeframe`)
+  so signals are not re-evaluated on the same closed bar.
 - Bitkub connector still targets the legacy `THB_BTC` symbols and v1/v2
   endpoints; confirm against the current Bitkub API (v3 uses `btc_thb`) with
   a recorded fixture before any live use. Market-buy THB is derived from the
@@ -35,7 +37,21 @@ connector. It is still unfit for real money (see P0).
 - Remove the unused `ta-lib`, `pandas-ta`, `alpaca` and `oanda` pins, or wire
   them up.
 
-## Done in this pass (pass 1)
+## Done in this pass (pass 3)
+- OHLCV P0: `BaseExchange.get_ohlcv()` (default `None`) with helpers
+  `ohlcv_frame()` (parses ccxt rows and raw Binance klines, drops invalid,
+  duplicate and out-of-order bars), `closed_bars()` and
+  `timeframe_seconds()`. Binance uses ccxt `fetch_ohlcv`, Binance TH its
+  public klines, and `PaperExchange` delegates market data to the wrapped
+  connector. `TradingBot._update_market_data` loads closed bars (configurable
+  `timeframe`, `ohlcv_limit`; invalid timeframe fails fast), falls back to
+  ticks only for connectors without klines, and never mixes ticks into kline
+  history after a failed refresh.
+- `tests/test_ohlcv.py` (9 offline tests, network layer faked). Full suite:
+  50 passed; CI ruff gate clean. Paper mode only; no credentials used. The
+  leaked Neon password still needs a manual rotation (not doable here).
+
+## Done in pass 1
 - Real orders now need an explicit `TRADING_MODE=live`. Every connector is
   otherwise wrapped by `PaperExchange`. Before this, Binance TH, Bitkub and
   InnovestX sent real signed orders in "paper" mode.
@@ -49,7 +65,7 @@ connector. It is still unfit for real money (see P0).
 - Untracked the committed `.pyc` files and logs. Added offline pytest suite
   (27 tests), `requirements-test.txt`, and a GitHub Actions CI workflow.
 
-## Done in this pass (pass 2)
+## Done in pass 2
 - Bitkub units made explicit: `bitkub_order_payload()` in
   `src/exchanges/bitkub_exchange.py` takes a base-asset quantity (the
   `BaseExchange` contract) and sends `amt` in THB for `place-bid`

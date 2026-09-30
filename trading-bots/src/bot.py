@@ -2,7 +2,7 @@
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -10,7 +10,7 @@ from loguru import logger
 
 from .config import Config
 from .database import DatabaseManager
-from .exchanges.base_exchange import BaseExchange
+from .exchanges.base_exchange import BaseExchange, closed_bars, timeframe_seconds
 from .exchanges.binance_exchange import BinanceExchange
 from .exchanges.binance_th_exchange import BinanceThExchange
 from .exchanges.bitkub_exchange import BitkubExchange
@@ -34,6 +34,13 @@ class TradingBot:
         self.strategy_name = bot_config.get("strategy", "grid")
         self.symbols = bot_config.get("symbols", [])
         self.config = bot_config.get("config", {})
+        # Strategies analyse closed OHLCV bars of this timeframe.
+        self.timeframe = self.config.get("timeframe", "1m")
+        timeframe_seconds(self.timeframe)  # fail fast on an invalid timeframe
+        self.ohlcv_limit = int(self.config.get("ohlcv_limit", 200))
+        # Symbols whose history comes from exchange klines; ticks are never
+        # mixed into those bars.
+        self._ohlcv_symbols = set()
 
         # Components
         self.db = DatabaseManager()
@@ -231,14 +238,20 @@ class TradingBot:
             logger.error(f"Error in trading cycle for bot {self.name}: {e}")
 
     async def _update_market_data(self, symbol: str):
-        """Update historical market data for analysis."""
-        try:
-            # Get recent price data (this would typically fetch from exchange)
-            # For now, we'll simulate with ticker data
-            ticker = await self.exchange.get_ticker(symbol)
+        """Refresh the strategy's history with closed OHLCV bars.
 
-            # In a real implementation, you'd fetch OHLCV data
-            # Here we'll create a simple data point
+        Real klines are preferred: indicators need true open/high/low/close
+        bars, not one tick sampled per cycle. Connectors without klines fall
+        back to accumulating observed ticks. Once a symbol has kline history,
+        a failed refresh keeps the last good bars instead of appending ticks.
+        """
+        try:
+            if await self._update_from_ohlcv(symbol):
+                return
+            if symbol in self._ohlcv_symbols:
+                return
+
+            ticker = await self.exchange.get_ticker(symbol)
             current_time = datetime.now()
 
             new_row = pd.DataFrame(
@@ -266,6 +279,25 @@ class TradingBot:
 
         except Exception as e:
             logger.error(f"Failed to update market data for {symbol}: {e}")
+
+    async def _update_from_ohlcv(self, symbol: str) -> bool:
+        """Load closed klines into the strategy; True when history was set."""
+        try:
+            bars = await self.exchange.get_ohlcv(
+                symbol, timeframe=self.timeframe, limit=self.ohlcv_limit
+            )
+        except Exception as e:
+            logger.warning(f"OHLCV fetch failed for {symbol}: {e}")
+            return False
+        if bars is None:
+            return False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bars = closed_bars(bars, self.timeframe, now)
+        if bars.empty:
+            return False
+        self._ohlcv_symbols.add(symbol)
+        self.strategy.update_historical_data(symbol, bars)
+        return True
 
     async def _manage_positions(self):
         """Manage existing positions."""

@@ -216,6 +216,13 @@ asyncio.run(start_single_bot())
 
 ## Trading Strategies
 
+**Market data (all strategies):** each cycle the bot loads closed OHLCV bars
+from the exchange (Binance via ccxt `fetch_ohlcv`, Binance TH via the public
+klines endpoint; the still-forming bar is dropped). Connectors without klines
+(Bitkub, InnovestX) fall back to one observed tick per cycle.
+- `timeframe`: bar size such as `1m`, `5m`, `1h` (default: `1m`)
+- `ohlcv_limit`: number of bars requested per refresh (default: 200)
+
 ### Grid Trading Strategy
 
 Places buy and sell orders at regular intervals around the current price to profit from market volatility.

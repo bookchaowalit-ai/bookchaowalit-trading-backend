@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 import ccxt.async_support as ccxt
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame
 
 
 class BinanceExchange(BaseExchange):
@@ -86,6 +86,11 @@ class BinanceExchange(BaseExchange):
         except Exception as e:
             logger.error(f"Failed to get Binance ticker for {symbol}: {e}")
             raise
+
+    async def get_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 200):
+        """Recent OHLCV bars via ccxt ``fetch_ohlcv`` (public endpoint)."""
+        rows = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        return ohlcv_frame(rows)
 
     async def place_order(
         self,

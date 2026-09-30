@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 import aiohttp
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame
 
 
 class BinanceThExchange(BaseExchange):
@@ -374,3 +374,8 @@ class BinanceThExchange(BaseExchange):
         except Exception as e:
             logger.error(f"Failed to get klines: {e}")
             return []
+
+    async def get_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 200):
+        """Recent OHLCV bars from the public klines endpoint."""
+        rows = await self.get_klines(symbol.replace("/", ""), interval=timeframe, limit=limit)
+        return ohlcv_frame(rows)

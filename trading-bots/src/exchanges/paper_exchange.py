@@ -52,6 +52,10 @@ class PaperExchange(BaseExchange):
     async def get_ticker(self, symbol: str) -> Ticker:
         return await self.inner.get_ticker(symbol)
 
+    async def get_ohlcv(self, symbol: str, timeframe: str = "1m", limit: int = 200):
+        # Public market data comes from the wrapped exchange.
+        return await self.inner.get_ohlcv(symbol, timeframe=timeframe, limit=limit)
+
     async def get_balance(self, currency: str = None) -> Dict[str, Balance]:
         items = self.balances.items()
         if currency:
