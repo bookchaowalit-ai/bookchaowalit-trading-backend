@@ -7,6 +7,7 @@ comes from the wrapped exchange, while balances and orders are simulated
 in memory.
 """
 
+import math
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -16,6 +17,13 @@ from loguru import logger
 from .base_exchange import Balance, BaseExchange, OrderResult, Ticker
 
 DEFAULT_PAPER_FEE_RATE = 0.001  # 0.1% taker fee
+
+
+def _positive_finite(value) -> bool:
+    try:
+        return math.isfinite(value) and value > 0
+    except TypeError:
+        return False
 
 
 class PaperOrderError(ValueError):
@@ -86,14 +94,15 @@ class PaperExchange(BaseExchange):
         side = side.lower()
         if side not in ("buy", "sell"):
             raise PaperOrderError(f"unsupported side {side!r}")
-        if not amount or amount <= 0:
-            raise PaperOrderError("order amount must be positive")
+        # NaN passes `not x` and `x <= 0`; one NaN fill poisons every balance.
+        if not _positive_finite(amount):
+            raise PaperOrderError("order amount must be a positive finite number")
 
         if order_type == "market" or not price:
             fill_price = (await self.get_ticker(symbol)).last
         else:
             fill_price = price
-        if not fill_price or fill_price <= 0:
+        if not _positive_finite(fill_price):
             raise PaperOrderError(f"no valid price for {symbol}")
 
         base, quote = self._split_symbol(symbol)

@@ -61,6 +61,17 @@ connector. It is still unfit for real money (see P0).
   of the paper exchange and database) instead of host-local
   `datetime.fromtimestamp`; Bitkub order stamps use `utc_now()`.
   `tests/test_utc_timestamps.py` (3 tests, run under TZ=Asia/Bangkok).
+- Binance order mapping (`_order_result`): ccxt returns `fee: None` and
+  `price: None` on market orders, so `order.get("fee", {}).get(...)` raised
+  *after* a live order was placed (position never tracked) and the price
+  was `None`. Now price = `average`, then `price`, then the reference price;
+  fee falls back to the `fees` list; null `filled` becomes 0.
+- NaN guards: `PaperExchange.place_order` and `TradingBot._execute_signal`
+  reject NaN/inf amounts and prices (NaN passed `not x` and `x <= 0`, so one
+  NaN ticker or size poisoned every paper balance). `_close_position` passes
+  the position's price as reference and tolerates `fees=None`.
+  `tests/test_nonfinite_and_ccxt_nulls.py`; suite 69 passed. Open: buy fees
+  are not in the entry price, so realized PnL is overstated by the buy fee.
 
 ## Done in pass 3
 - OHLCV P0: `BaseExchange.get_ohlcv()` (default `None`) with helpers

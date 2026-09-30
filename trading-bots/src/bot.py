@@ -1,6 +1,7 @@
 """Main trading bot implementation."""
 
 import asyncio
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -20,6 +21,14 @@ from .strategies.base_strategy import BaseStrategy, Position, Signal
 from .strategies.grid_strategy import GridTradingStrategy
 from .strategies.momentum_strategy import MomentumStrategy
 from .strategies.thai_stock_strategy import ThaiStockStrategy
+
+
+def _positive_finite(value) -> bool:
+    """True for a real number > 0; NaN/inf from a strategy or ticker is not."""
+    try:
+        return math.isfinite(value) and value > 0
+    except TypeError:
+        return False
 
 
 class TradingBot:
@@ -341,7 +350,7 @@ class TradingBot:
                 f"Executing {signal.action} signal for {signal.symbol} at ${signal.price:.4f}"
             )
 
-            if not signal.amount or signal.amount <= 0 or not signal.price or signal.price <= 0:
+            if not (_positive_finite(signal.amount) and _positive_finite(signal.price)):
                 logger.warning(f"Skipping {signal.action} for {signal.symbol}: invalid amount/price")
                 return
 
@@ -436,6 +445,9 @@ class TradingBot:
                 symbol=position.symbol,
                 side=close_side,
                 amount=position.amount,
+                # Reference price for connectors whose market-order response
+                # carries no execution price; market orders ignore it.
+                price=position.current_price,
                 order_type="market",
             )
 
@@ -445,7 +457,7 @@ class TradingBot:
             else:
                 pnl = (position.entry_price - order_result.price) * position.amount
 
-            pnl -= order_result.fees  # Subtract fees
+            pnl -= order_result.fees or 0.0  # Subtract fees
 
             # Record closing trade
             trade_data = {

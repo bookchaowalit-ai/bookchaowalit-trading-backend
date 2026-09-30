@@ -1,11 +1,76 @@
 """Binance exchange connector."""
 
+import math
 from typing import Any, Dict, List, Optional
 
 import ccxt.async_support as ccxt
 from loguru import logger
 
 from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame, utc_from_ms
+
+
+def _finite(value: Any) -> Optional[float]:
+    """``value`` as a float when it is a finite number, else ``None``."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _order_fee(order: Dict[str, Any]) -> float:
+    """Total fee cost of a ccxt order.
+
+    ccxt always includes the ``fee`` key but sets it to ``None`` when the
+    exchange reported no fee (common for Binance market orders), so
+    ``order.get("fee", {}).get(...)`` raised ``AttributeError`` *after* the
+    order had been placed. Multi-asset fills report a ``fees`` list instead.
+    """
+    fee = order.get("fee")
+    if isinstance(fee, dict) and _finite(fee.get("cost")) is not None:
+        return _finite(fee.get("cost"))
+    total = 0.0
+    for item in order.get("fees") or []:
+        if isinstance(item, dict):
+            total += _finite(item.get("cost")) or 0.0
+    return total
+
+
+def _order_result(
+    order: Dict[str, Any],
+    symbol: str,
+    side: str,
+    amount: Optional[float] = None,
+    fallback_price: Optional[float] = None,
+    default_status: str = "unknown",
+) -> OrderResult:
+    """Map a ccxt order onto ``OrderResult`` without trusting nullable fields.
+
+    ccxt sets ``price`` to ``None`` (or 0) on market orders and puts the
+    execution price in ``average``; ``filled``/``amount`` may be ``None`` too.
+    The execution price prefers ``average``, then ``price``, then the caller's
+    reference price.
+    """
+    price = next(
+        (
+            value
+            for value in (_finite(order.get("average")), _finite(order.get("price")), _finite(fallback_price))
+            if value is not None and value > 0
+        ),
+        0.0,
+    )
+    requested = _finite(order.get("amount"))
+    return OrderResult(
+        order_id=order["id"],
+        symbol=order.get("symbol") or symbol,
+        side=order.get("side") or side,
+        amount=amount if amount is not None else (requested or 0.0),
+        price=price,
+        status=order.get("status") or default_status,
+        filled_amount=_finite(order.get("filled")) or 0.0,
+        fees=_order_fee(order),
+        timestamp=utc_from_ms(order.get("timestamp") or 0),
+    )
 
 
 class BinanceExchange(BaseExchange):
@@ -106,17 +171,7 @@ class BinanceExchange(BaseExchange):
                     symbol, side, amount, price
                 )
 
-            return OrderResult(
-                order_id=order["id"],
-                symbol=symbol,
-                side=side,
-                amount=amount,
-                price=order.get("price", price or 0.0),
-                status=order.get("status", "pending"),
-                filled_amount=order.get("filled", 0.0),
-                fees=order.get("fee", {}).get("cost", 0.0),
-                timestamp=utc_from_ms(order.get("timestamp", 0)),
-            )
+            return _order_result(order, symbol, side, amount, price, default_status="pending")
         except Exception as e:
             logger.error(f"Failed to place Binance order: {e}")
             raise
@@ -135,17 +190,7 @@ class BinanceExchange(BaseExchange):
         """Get status of an existing order on Binance."""
         try:
             order = await self.exchange.fetch_order(order_id, symbol)
-            return OrderResult(
-                order_id=order["id"],
-                symbol=symbol,
-                side=order["side"],
-                amount=order["amount"],
-                price=order.get("price", 0.0),
-                status=order.get("status", "unknown"),
-                filled_amount=order.get("filled", 0.0),
-                fees=order.get("fee", {}).get("cost", 0.0),
-                timestamp=utc_from_ms(order.get("timestamp", 0)),
-            )
+            return _order_result(order, symbol, order.get("side"))
         except Exception as e:
             logger.error(f"Failed to get Binance order status: {e}")
             raise
@@ -155,17 +200,7 @@ class BinanceExchange(BaseExchange):
         try:
             orders = await self.exchange.fetch_open_orders(symbol)
             return [
-                OrderResult(
-                    order_id=order["id"],
-                    symbol=order["symbol"],
-                    side=order["side"],
-                    amount=order["amount"],
-                    price=order.get("price", 0.0),
-                    status=order.get("status", "open"),
-                    filled_amount=order.get("filled", 0.0),
-                    fees=order.get("fee", {}).get("cost", 0.0),
-                    timestamp=utc_from_ms(order.get("timestamp", 0)),
-                )
+                _order_result(order, order.get("symbol"), order.get("side"), default_status="open")
                 for order in orders
             ]
         except Exception as e:
@@ -179,17 +214,7 @@ class BinanceExchange(BaseExchange):
         try:
             orders = await self.exchange.fetch_orders(symbol, limit=limit)
             return [
-                OrderResult(
-                    order_id=order["id"],
-                    symbol=order["symbol"],
-                    side=order["side"],
-                    amount=order["amount"],
-                    price=order.get("price", 0.0),
-                    status=order.get("status", "unknown"),
-                    filled_amount=order.get("filled", 0.0),
-                    fees=order.get("fee", {}).get("cost", 0.0),
-                    timestamp=utc_from_ms(order.get("timestamp", 0)),
-                )
+                _order_result(order, order.get("symbol"), order.get("side"), default_status="unknown")
                 for order in orders
             ]
         except Exception as e:
