@@ -2,7 +2,7 @@
 
 ## Current state
 
-**Score: 5 / 10** (4.5 after pass 2, 4 after pass 1, 2 before). Strategies now analyse closed exchange klines instead of one tick per minute. A prototype multi-exchange bot
+**Score: 5.5 / 10** (5 after pass 3, 4.5 after pass 2, 4 after pass 1, 2 before). Each closed bar is now analysed once, so long timeframes no longer repeat the same signal every 60 s cycle. Strategies now analyse closed exchange klines instead of one tick per minute. A prototype multi-exchange bot
 runner. It now has offline tests, CI, and paper mode enforced for every
 connector. It is still unfit for real money (see P0).
 
@@ -16,17 +16,25 @@ connector. It is still unfit for real money (see P0).
 ### P1
 - Klines for Bitkub (`/tradingview/history`) and InnovestX so they stop
   falling back to one tick per cycle; record a fixture per exchange first.
-- Run the trading cycle on bar close (align the 60 s sleep to `timeframe`)
-  so signals are not re-evaluated on the same closed bar.
-- Bitkub connector still targets the legacy `THB_BTC` symbols and v1/v2
-  endpoints; confirm against the current Bitkub API (v3 uses `btc_thb`) with
-  a recorded fixture before any live use. Market-buy THB is derived from the
+- Optional: align the 60 s cycle to the `timeframe` close to cut signal
+  latency (repeat evaluation of a closed bar is already prevented).
+- Bitkub connector still targets the legacy `THB_BTC` symbols and
+  unversioned `/api/market/*` endpoints; the repo holds no Bitkub API docs
+  or fixtures to confirm against. Record a sanitized v3 fixture (v3 uses
+  `btc_thb`, `/api/v3/market/*`, and signs timestamp + method + path +
+  query/body), then migrate with a symbol normalizer before any live use.
+  booktrading's Go client already has a v3 implementation to mirror
+  (`backend/internal/adapter/exchange/bitkub/orders_v3.go`). Market-buy THB is derived from the
   current ask, so the filled base quantity can differ slightly; reconcile
   fills from the order history.
 - Momentum and Thai-stock strategies size positions from a hard-coded
   balance (10k / 100k). Pass the real (or paper) balance in.
 - `GridTradingStrategy.update_grid_after_fill` is never called, so grid
-  levels never re-arm after a fill.
+  levels never re-arm after a fill. It also cannot match anything as
+  written: buy levels sit below the centre and sell levels above, so
+  `filled * (1 ± spacing)` never lands on an opposite level. A level is also
+  deactivated when its signal is skipped (e.g. a sell with no position).
+  Redesign as buy/sell level pairs and re-arm only on a confirmed fill.
 - Move money math to `Decimal` at the exchange boundary, with lot-size and
   tick-size rounding.
 - Make `DatabaseManager` injectable instead of connecting in
@@ -37,7 +45,19 @@ connector. It is still unfit for real money (see P0).
 - Remove the unused `ta-lib`, `pandas-ta`, `alpaca` and `oanda` pins, or wire
   them up.
 
-## Done in this pass (pass 3)
+## Done in this pass (pass 4)
+- Repeated-signal fix: `TradingBot` remembers the open time of the last bar
+  it analysed per symbol (`_last_evaluated_bar`) and skips
+  `strategy.analyze` until a newer closed bar arrives. Before, a 4h
+  timeframe re-analysed the same closed bar every 60 s and could buy on
+  every cycle. A failed kline refresh (same bars) is not re-traded either;
+  tick-fallback symbols still analyse each new tick. Removed two unused
+  imports in `bot.py`.
+- Tests: `test_each_closed_bar_is_analysed_once` (fails without the fix)
+  and `test_tick_fallback_is_analysed_every_cycle` in `tests/test_ohlcv.py`.
+  Full suite 60 passed; CI ruff gate clean. Paper mode only.
+
+## Done in pass 3
 - OHLCV P0: `BaseExchange.get_ohlcv()` (default `None`) with helpers
   `ohlcv_frame()` (parses ccxt rows and raw Binance klines, drops invalid,
   duplicate and out-of-order bars), `closed_bars()` and
