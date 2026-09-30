@@ -6,7 +6,16 @@ from typing import Any, Dict, List, Optional
 import ccxt.async_support as ccxt
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame, utc_from_ms
+from .base_exchange import (
+    Balance,
+    BaseExchange,
+    OrderResult,
+    Ticker,
+    fee_to_quote,
+    ohlcv_frame,
+    split_symbol,
+    utc_from_ms,
+)
 
 
 def _finite(value: Any) -> Optional[float]:
@@ -18,21 +27,32 @@ def _finite(value: Any) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
-def _order_fee(order: Dict[str, Any]) -> float:
-    """Total fee cost of a ccxt order.
+def _order_fee(order: Dict[str, Any], symbol: str = "", price: float = 0.0) -> float:
+    """Total fee cost of a ccxt order, in ``symbol``'s quote currency.
 
     ccxt always includes the ``fee`` key but sets it to ``None`` when the
     exchange reported no fee (common for Binance market orders), so
     ``order.get("fee", {}).get(...)`` raised ``AttributeError`` *after* the
     order had been placed. Multi-asset fills report a ``fees`` list instead.
+    Binance charges buy commissions in the base asset by default, so each
+    fee is converted with its own ``currency`` (base -> ``cost * price``).
+    Without a ``symbol`` the raw costs are summed (legacy behavior).
     """
+    def convert(item: Dict[str, Any]) -> float:
+        cost = _finite(item.get("cost"))
+        if cost is None:
+            return 0.0
+        if not symbol:
+            return cost
+        return fee_to_quote(cost, item.get("currency"), symbol, price)
+
     fee = order.get("fee")
     if isinstance(fee, dict) and _finite(fee.get("cost")) is not None:
-        return _finite(fee.get("cost"))
+        return convert(fee)
     total = 0.0
     for item in order.get("fees") or []:
         if isinstance(item, dict):
-            total += _finite(item.get("cost")) or 0.0
+            total += convert(item)
     return total
 
 
@@ -68,7 +88,8 @@ def _order_result(
         price=price,
         status=order.get("status") or default_status,
         filled_amount=_finite(order.get("filled")) or 0.0,
-        fees=_order_fee(order),
+        fees=_order_fee(order, order.get("symbol") or symbol, price),
+        fee_currency=split_symbol(order.get("symbol") or symbol)[1],
         timestamp=utc_from_ms(order.get("timestamp") or 0),
     )
 

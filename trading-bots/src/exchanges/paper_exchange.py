@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, split_symbol
 
 DEFAULT_PAPER_FEE_RATE = 0.001  # 0.1% taker fee
 
@@ -72,16 +72,7 @@ class PaperExchange(BaseExchange):
 
     @staticmethod
     def _split_symbol(symbol: str) -> tuple:
-        if "/" in symbol:
-            base, quote = symbol.split("/", 1)
-            return base, quote
-        if "_" in symbol:  # Bitkub style THB_BTC
-            quote, base = symbol.split("_", 1)
-            return base, quote
-        for quote in ("USDT", "THB", "USD", "BUSD"):
-            if symbol.endswith(quote) and len(symbol) > len(quote):
-                return symbol[: -len(quote)], quote
-        return symbol, "USD"
+        return split_symbol(symbol)
 
     async def place_order(
         self,
@@ -129,6 +120,7 @@ class PaperExchange(BaseExchange):
             status="filled",
             filled_amount=amount,
             fees=fee,
+            fee_currency=quote,
             timestamp=datetime.utcnow(),
         )
         self.orders.append(result)

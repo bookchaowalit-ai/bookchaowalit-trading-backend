@@ -70,8 +70,19 @@ connector. It is still unfit for real money (see P0).
   reject NaN/inf amounts and prices (NaN passed `not x` and `x <= 0`, so one
   NaN ticker or size poisoned every paper balance). `_close_position` passes
   the position's price as reference and tolerates `fees=None`.
-  `tests/test_nonfinite_and_ccxt_nulls.py`; suite 69 passed. Open: buy fees
-  are not in the entry price, so realized PnL is overstated by the buy fee.
+  `tests/test_nonfinite_and_ccxt_nulls.py`; suite 69 passed.
+- Fee-inclusive cost basis: `bot.buy_entry_price` adds the buy fee (in
+  quote currency) to `entry_price`; `bot.realized_sell_pnl` deducts only the
+  sell fee from proceeds. Both `_execute_signal` and `_close_position` (paper
+  and live) use them, so realized PnL is no longer overstated by the buy fee.
+  `OrderResult.fee_currency` (None = quote) plus `base_exchange.fee_to_quote`
+  convert base-asset fees at the fill price (Binance ccxt `fee.currency`,
+  Binance TH `fills[].commissionAsset`); a third-asset fee such as BNB is
+  excluded with a warning, never added as quote. `tests/test_fee_cost_basis.py`
+  (paper round trip PnL == quote balance change, base-asset buy fee, both
+  connectors); suite 75 passed, CI ruff gate clean. Note: a base-asset buy
+  fee also shrinks the coins received; the tracked amount still equals the
+  ordered amount (reconcile with balances before live use).
 
 ## Done in pass 3
 - OHLCV P0: `BaseExchange.get_ohlcv()` (default `None`) with helpers

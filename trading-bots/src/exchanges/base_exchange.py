@@ -4,8 +4,10 @@ from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Optional, Any, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 
 import pandas as pd
+from loguru import logger
 
 
 def utc_from_ms(ms: Any) -> datetime:
@@ -17,6 +19,49 @@ def utc_from_ms(ms: Any) -> datetime:
     paper orders and ``created_at`` on any non-UTC host.
     """
     return datetime.fromtimestamp((ms or 0) / 1000, tz=timezone.utc).replace(tzinfo=None)
+
+
+def split_symbol(symbol: str) -> tuple:
+    """``(base, quote)`` for ``BTC/USDT``, Bitkub ``THB_BTC`` or ``BTCUSDT``."""
+    if "/" in symbol:
+        base, quote = symbol.split("/", 1)
+        return base, quote
+    if "_" in symbol:  # Bitkub style THB_BTC
+        quote, base = symbol.split("_", 1)
+        return base, quote
+    for quote in ("USDT", "THB", "USD", "BUSD"):
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            return symbol[: -len(quote)], quote
+    return symbol, "USD"
+
+
+def fee_to_quote(cost: Any, currency: Optional[str], symbol: str, price: float) -> float:
+    """One fee amount expressed in ``symbol``'s quote currency.
+
+    A fee charged in the base asset (e.g. Binance deducting the commission
+    from the bought coins) is worth ``cost * price`` quote. A fee in a third
+    asset (e.g. BNB) cannot be priced here; it is ignored with a warning
+    rather than being added as if it were quote currency.
+    """
+    try:
+        cost = float(cost)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(cost) or cost == 0:
+        return 0.0
+    base, quote = split_symbol(symbol)
+    cur = (currency or "").upper()
+    if not cur or cur == quote.upper():
+        return cost
+    if cur == base.upper():
+        return cost * price if math.isfinite(price) and price > 0 else 0.0
+    logger.warning(f"Fee of {cost} {currency} on {symbol} is not in base/quote; excluded from PnL")
+    return 0.0
+
+
+def order_fee_in_quote(result: "OrderResult", symbol: Optional[str] = None) -> float:
+    """``result.fees`` converted to the quote currency of the traded symbol."""
+    return fee_to_quote(result.fees or 0.0, result.fee_currency, symbol or result.symbol, result.price)
 
 
 def utc_now() -> datetime:
@@ -36,6 +81,9 @@ class OrderResult:
     filled_amount: float = 0.0
     fees: float = 0.0
     timestamp: datetime = None
+    # Currency ``fees`` is denominated in. ``None`` means the quote currency
+    # (the convention of every connector that does not report it).
+    fee_currency: Optional[str] = None
 
 
 @dataclass

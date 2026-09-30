@@ -11,7 +11,7 @@ from loguru import logger
 
 from .config import Config
 from .database import DatabaseManager
-from .exchanges.base_exchange import BaseExchange, closed_bars, timeframe_seconds
+from .exchanges.base_exchange import BaseExchange, OrderResult, closed_bars, order_fee_in_quote, timeframe_seconds
 from .exchanges.binance_exchange import BinanceExchange
 from .exchanges.binance_th_exchange import BinanceThExchange
 from .exchanges.bitkub_exchange import BitkubExchange
@@ -29,6 +29,28 @@ def _positive_finite(value) -> bool:
         return math.isfinite(value) and value > 0
     except TypeError:
         return False
+
+
+def buy_entry_price(held_amount: float, held_entry: float, fill: OrderResult, symbol: str) -> float:
+    """Per-unit cost basis after a buy, buy fee included.
+
+    The buy fee (converted to quote currency) is part of what the position
+    cost, so it goes into ``entry_price``; otherwise every realized PnL was
+    overstated by the buy fee. Paper and live fills share this function.
+    """
+    held_amount = held_amount if held_amount > 0 else 0.0
+    total = held_amount + fill.amount
+    cost = held_entry * held_amount + fill.price * fill.amount + order_fee_in_quote(fill, symbol)
+    return cost / total
+
+
+def realized_sell_pnl(entry_price: float, fill: OrderResult, symbol: str) -> float:
+    """PnL of selling ``fill.amount`` from a long whose cost basis is ``entry_price``.
+
+    The sell fee is deducted from the proceeds; the buy fee is already in
+    ``entry_price`` (see :func:`buy_entry_price`).
+    """
+    return (fill.price - entry_price) * fill.amount - order_fee_in_quote(fill, symbol)
 
 
 class TradingBot:
@@ -374,10 +396,7 @@ class TradingBot:
 
             realized_pnl = 0.0
             if signal.action == "sell":
-                realized_pnl = (
-                    (order_result.price - held.entry_price) * order_result.amount
-                    - (order_result.fees or 0.0)
-                )
+                realized_pnl = realized_sell_pnl(held.entry_price, order_result, signal.symbol)
 
             # Record trade in database
             trade_data = {
@@ -396,12 +415,10 @@ class TradingBot:
             # Update strategy position tracking (one aggregated long per symbol)
             if signal.action == "buy":
                 if held is not None and held.amount > 0:
-                    total = held.amount + order_result.amount
-                    held.entry_price = (
-                        held.entry_price * held.amount
-                        + order_result.price * order_result.amount
-                    ) / total
-                    held.amount = total
+                    held.entry_price = buy_entry_price(
+                        held.amount, held.entry_price, order_result, signal.symbol
+                    )
+                    held.amount += order_result.amount
                     held.current_price = order_result.price
                 else:
                     self.strategy.add_position(
@@ -409,7 +426,7 @@ class TradingBot:
                             symbol=signal.symbol,
                             side="long",
                             amount=order_result.amount,
-                            entry_price=order_result.price,
+                            entry_price=buy_entry_price(0.0, 0.0, order_result, signal.symbol),
                             current_price=order_result.price,
                             pnl=0.0,
                             timestamp=datetime.now(),
@@ -451,13 +468,12 @@ class TradingBot:
                 order_type="market",
             )
 
-            # Calculate P&L
+            # Calculate P&L (entry_price already carries the buy fee)
             if position.side == "long":
-                pnl = (order_result.price - position.entry_price) * position.amount
+                pnl = realized_sell_pnl(position.entry_price, order_result, position.symbol)
             else:
                 pnl = (position.entry_price - order_result.price) * position.amount
-
-            pnl -= order_result.fees or 0.0  # Subtract fees
+                pnl -= order_fee_in_quote(order_result, position.symbol)
 
             # Record closing trade
             trade_data = {

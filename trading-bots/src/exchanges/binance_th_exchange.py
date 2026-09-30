@@ -1,6 +1,5 @@
 """Binance TH exchange connector."""
 
-import asyncio
 import hashlib
 import hmac
 import time
@@ -10,8 +9,34 @@ from urllib.parse import urlencode
 import aiohttp
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, ohlcv_frame, utc_from_ms
+from .base_exchange import (
+    Balance,
+    BaseExchange,
+    OrderResult,
+    Ticker,
+    fee_to_quote,
+    ohlcv_frame,
+    split_symbol,
+    utc_from_ms,
+)
 
+
+
+def fills_fee_in_quote(fills: List[Dict[str, Any]], symbol: str) -> float:
+    """Sum Binance ``fills`` commissions in ``symbol``'s quote currency.
+
+    Buy commissions are usually charged in the base asset
+    (``commissionAsset == "BTC"``); each is converted at its own fill price
+    so it can be added to the position's cost basis.
+    """
+    total = 0.0
+    for fill in fills:
+        try:
+            fill_price = float(fill.get("price") or 0)
+        except (TypeError, ValueError):
+            fill_price = 0.0
+        total += fee_to_quote(fill.get("commission", 0), fill.get("commissionAsset"), symbol, fill_price)
+    return total
 
 class BinanceThExchange(BaseExchange):
     """Binance TH exchange connector for cryptocurrency trading."""
@@ -201,9 +226,8 @@ class BinanceThExchange(BaseExchange):
                 price=float(data.get("price", price or 0)),
                 status=self._convert_order_status(data["status"]),
                 filled_amount=float(data.get("executedQty", 0)),
-                fees=sum(
-                    float(fill.get("commission", 0)) for fill in data.get("fills", [])
-                ),
+                fees=fills_fee_in_quote(data.get("fills") or [], symbol),
+                fee_currency=split_symbol(symbol)[1],
                 timestamp=utc_from_ms(data.get("transactTime", 0)),
             )
         except Exception as e:

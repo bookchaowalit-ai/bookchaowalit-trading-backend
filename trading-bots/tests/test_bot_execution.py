@@ -56,7 +56,9 @@ async def test_buys_aggregate_into_one_position_and_sell_realizes_pnl(bot):
 
     pos = bot.strategy.positions["BTC/USDT"]
     assert pos.amount == pytest.approx(0.02)
-    assert pos.entry_price == pytest.approx(45_000.0)
+    buy_fees = (0.01 * 50_000 + 0.01 * 40_000) * 0.001
+    # Cost basis carries the buy fees (quote currency).
+    assert pos.entry_price == pytest.approx((900.0 + buy_fees) / 0.02)
 
     bot._inner.prices["BTC/USDT"] = 60_000.0
     await bot._execute_signal(_signal("sell", 1.0, price=60_000.0))  # clamped to held 0.02
@@ -64,7 +66,7 @@ async def test_buys_aggregate_into_one_position_and_sell_realizes_pnl(bot):
     sell = bot.db.trades[-1]
     assert sell["amount"] == pytest.approx(0.02)
     fee = 0.02 * 60_000 * 0.001
-    assert sell["pnl"] == pytest.approx((60_000 - 45_000) * 0.02 - fee)
+    assert sell["pnl"] == pytest.approx((60_000 - 45_000) * 0.02 - fee - buy_fees)
     assert bot.performance_metrics["winning_trades"] == 1
 
 
