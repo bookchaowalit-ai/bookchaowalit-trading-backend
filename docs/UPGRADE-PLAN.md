@@ -2,7 +2,7 @@
 
 ## Current state
 
-**Score: 5.5 / 10** (5 after pass 3, 4.5 after pass 2, 4 after pass 1, 2 before). Each closed bar is now analysed once, so long timeframes no longer repeat the same signal every 60 s cycle. Strategies now analyse closed exchange klines instead of one tick per minute. A prototype multi-exchange bot
+**Score: 6 / 10** (5.5 after pass 4, 5 after pass 3, 4.5 after pass 2, 4 after pass 1, 2 before). Tracked holdings now match coins actually received, and Binance TH fills carry a real price. Each closed bar is now analysed once, so long timeframes no longer repeat the same signal every 60 s cycle. Strategies now analyse closed exchange klines instead of one tick per minute. A prototype multi-exchange bot
 runner. It now has offline tests, CI, and paper mode enforced for every
 connector. It is still unfit for real money (see P0).
 
@@ -45,7 +45,28 @@ connector. It is still unfit for real money (see P0).
 - Remove the unused `ta-lib`, `pandas-ta`, `alpaca` and `oanda` pins, or wire
   them up.
 
-## Done in this pass (pass 4)
+## Done in this pass (pass 5)
+- Net filled quantity: `OrderResult.base_fee` (base-asset commission
+  withheld from a buy, in base units) plus `base_exchange.filled_quantity`,
+  `base_fee_quantity` and `net_base_received` (filled minus base fee).
+  `TradingBot._execute_signal` adds the net coins to the position, and
+  `buy_entry_price` divides the quote actually spent by that net quantity,
+  so a later full sell or `_close_position` never exceeds real holdings.
+  Binance (ccxt `fee`/`fees` in the base currency) and Binance TH
+  (`fills[].commissionAsset == base`) fill `base_fee`; BNB fees do not
+  reduce the quantity.
+- Binance TH fill price: `order_fill_price()` uses the qty-weighted
+  `fills[]` average, then `cummulativeQuoteQty / executedQty`, then a
+  positive echoed `price`, then the caller's reference price (market orders
+  echo `price: 0`). Used by `place_order`, `get_order_status` and
+  `get_order_history`; `executedQty` is parsed null-safe.
+- Tests: `tests/test_net_fill_and_price.py` (6 tests; the bot tests use a
+  fake venue that rejects oversells, the Binance TH test fakes
+  `_make_request`). The three regression tests fail on the old code. The
+  pass-4 base-fee test now expects 0.0999 BTC held. Suite 81 passed; CI
+  ruff gate clean. Paper/offline only, no credentials.
+
+## Done in pass 4
 - Repeated-signal fix: `TradingBot` remembers the open time of the last bar
   it analysed per symbol (`_last_evaluated_bar`) and skips
   `strategy.analyze` until a newer closed bar arrives. Before, a 4h

@@ -64,6 +64,50 @@ def order_fee_in_quote(result: "OrderResult", symbol: Optional[str] = None) -> f
     return fee_to_quote(result.fees or 0.0, result.fee_currency, symbol or result.symbol, result.price)
 
 
+def filled_quantity(result: "OrderResult") -> float:
+    """Base quantity the order actually executed (``filled_amount``, else ``amount``)."""
+    for value in (result.filled_amount, result.amount):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value > 0:
+            return value
+    return 0.0
+
+
+def base_fee_quantity(result: "OrderResult", symbol: Optional[str] = None) -> float:
+    """Commission charged in the base asset, i.e. coins withheld from a buy.
+
+    Connectors that convert fees to quote record the withheld coins in
+    ``base_fee``; otherwise ``fees`` counts when ``fee_currency`` is the base.
+    """
+    try:
+        withheld = float(result.base_fee or 0.0)
+    except (TypeError, ValueError):
+        withheld = 0.0
+    if math.isfinite(withheld) and withheld > 0:
+        return withheld
+    base, _ = split_symbol(symbol or result.symbol)
+    if (result.fee_currency or "").upper() == base.upper():
+        try:
+            fee = float(result.fees or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+        return fee if math.isfinite(fee) and fee > 0 else 0.0
+    return 0.0
+
+
+def net_base_received(result: "OrderResult", symbol: Optional[str] = None) -> float:
+    """Coins a buy actually adds to the account: filled minus base-asset fee.
+
+    Binance deducts buy commissions from the bought coins by default, so the
+    account holds less than was ordered; tracking the ordered amount made a
+    later full sell exceed the real holdings.
+    """
+    return max(filled_quantity(result) - base_fee_quantity(result, symbol), 0.0)
+
+
 def utc_now() -> datetime:
     """Current time as naive UTC (same convention as :func:`utc_from_ms`)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -84,6 +128,9 @@ class OrderResult:
     # Currency ``fees`` is denominated in. ``None`` means the quote currency
     # (the convention of every connector that does not report it).
     fee_currency: Optional[str] = None
+    # Base-asset commission withheld from the coins received (buy side), in
+    # base units. Kept even when ``fees`` has been converted to quote.
+    base_fee: float = 0.0
 
 
 @dataclass

@@ -90,8 +90,23 @@ def _order_result(
         filled_amount=_finite(order.get("filled")) or 0.0,
         fees=_order_fee(order, order.get("symbol") or symbol, price),
         fee_currency=split_symbol(order.get("symbol") or symbol)[1],
+        base_fee=_order_base_fee(order, order.get("symbol") or symbol),
         timestamp=utc_from_ms(order.get("timestamp") or 0),
     )
+
+
+def _order_base_fee(order: Dict[str, Any], symbol: str) -> float:
+    """ccxt fee cost charged in ``symbol``'s base asset (coins withheld)."""
+    base = split_symbol(symbol)[0].upper()
+    fee = order.get("fee")
+    items = [fee] if isinstance(fee, dict) and _finite(fee.get("cost")) is not None else order.get("fees") or []
+    total = 0.0
+    for item in items:
+        if isinstance(item, dict) and (item.get("currency") or "").upper() == base:
+            cost = _finite(item.get("cost"))
+            if cost is not None and cost > 0:
+                total += cost
+    return total
 
 
 class BinanceExchange(BaseExchange):

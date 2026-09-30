@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import math
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
@@ -37,6 +38,54 @@ def fills_fee_in_quote(fills: List[Dict[str, Any]], symbol: str) -> float:
             fill_price = 0.0
         total += fee_to_quote(fill.get("commission", 0), fill.get("commissionAsset"), symbol, fill_price)
     return total
+
+
+def _positive(value: Any) -> Optional[float]:
+    """``value`` as a float when it is a finite number > 0, else ``None``."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def fills_base_fee(fills: List[Dict[str, Any]], symbol: str) -> float:
+    """Commission withheld in the base asset (coins not received on a buy)."""
+    base = split_symbol(symbol)[0].upper()
+    total = 0.0
+    for fill in fills:
+        if (fill.get("commissionAsset") or "").upper() == base:
+            total += _positive(fill.get("commission")) or 0.0
+    return total
+
+
+def order_fill_price(data: Dict[str, Any], reference: Optional[float] = None) -> float:
+    """Execution price of a Binance TH order response, never 0 when avoidable.
+
+    Market orders come back with ``price: "0.00000000"``. Prefer the
+    qty-weighted average of ``fills``, then ``cummulativeQuoteQty /
+    executedQty``, then a positive echoed ``price`` (limit orders), then the
+    caller's reference price.
+    """
+    qty_total = 0.0
+    notional = 0.0
+    for fill in data.get("fills") or []:
+        qty, price = _positive(fill.get("qty")), _positive(fill.get("price"))
+        if qty and price:
+            qty_total += qty
+            notional += qty * price
+    if qty_total > 0:
+        return notional / qty_total
+    quote_qty, executed = _positive(data.get("cummulativeQuoteQty")), _positive(data.get("executedQty"))
+    if quote_qty and executed:
+        return quote_qty / executed
+    for candidate in (data.get("price"), reference):
+        value = _positive(candidate)
+        if value:
+            return value
+    logger.warning(f"No execution price for Binance TH order {data.get('orderId')}")
+    return 0.0
+
 
 class BinanceThExchange(BaseExchange):
     """Binance TH exchange connector for cryptocurrency trading."""
@@ -218,16 +267,18 @@ class BinanceThExchange(BaseExchange):
                 "POST", "/api/v1/order", params, signed=True
             )
 
+            fills = data.get("fills") or []
             return OrderResult(
                 order_id=str(data["orderId"]),
                 symbol=symbol,
                 side=side.lower(),
                 amount=amount,
-                price=float(data.get("price", price or 0)),
+                price=order_fill_price(data, price),
                 status=self._convert_order_status(data["status"]),
-                filled_amount=float(data.get("executedQty", 0)),
-                fees=fills_fee_in_quote(data.get("fills") or [], symbol),
+                filled_amount=_positive(data.get("executedQty")) or 0.0,
+                fees=fills_fee_in_quote(fills, symbol),
                 fee_currency=split_symbol(symbol)[1],
+                base_fee=fills_base_fee(fills, symbol),
                 timestamp=utc_from_ms(data.get("transactTime", 0)),
             )
         except Exception as e:
@@ -258,9 +309,9 @@ class BinanceThExchange(BaseExchange):
                 symbol=data["symbol"],
                 side=data["side"].lower(),
                 amount=float(data["origQty"]),
-                price=float(data["price"]),
+                price=order_fill_price(data),
                 status=self._convert_order_status(data["status"]),
-                filled_amount=float(data["executedQty"]),
+                filled_amount=_positive(data.get("executedQty")) or 0.0,
                 fees=0.0,  # Would need separate API call to get fees
                 timestamp=utc_from_ms(data.get("time", 0)),
             )
@@ -321,7 +372,7 @@ class BinanceThExchange(BaseExchange):
                         symbol=order_data["symbol"],
                         side=order_data["side"].lower(),
                         amount=float(order_data["origQty"]),
-                        price=float(order_data["price"]),
+                        price=order_fill_price(order_data),
                         status=self._convert_order_status(order_data["status"]),
                         filled_amount=float(order_data["executedQty"]),
                         fees=0.0,

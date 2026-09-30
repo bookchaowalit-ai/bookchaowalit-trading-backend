@@ -11,7 +11,14 @@ from loguru import logger
 
 from .config import Config
 from .database import DatabaseManager
-from .exchanges.base_exchange import BaseExchange, OrderResult, closed_bars, order_fee_in_quote, timeframe_seconds
+from .exchanges.base_exchange import (
+    BaseExchange,
+    OrderResult,
+    closed_bars,
+    net_base_received,
+    order_fee_in_quote,
+    timeframe_seconds,
+)
 from .exchanges.binance_exchange import BinanceExchange
 from .exchanges.binance_th_exchange import BinanceThExchange
 from .exchanges.bitkub_exchange import BitkubExchange
@@ -37,10 +44,16 @@ def buy_entry_price(held_amount: float, held_entry: float, fill: OrderResult, sy
     The buy fee (converted to quote currency) is part of what the position
     cost, so it goes into ``entry_price``; otherwise every realized PnL was
     overstated by the buy fee. Paper and live fills share this function.
+    The quantity is the net coins received (see :func:`net_base_received`).
     """
     held_amount = held_amount if held_amount > 0 else 0.0
-    total = held_amount + fill.amount
-    cost = held_entry * held_amount + fill.price * fill.amount + order_fee_in_quote(fill, symbol)
+    received = net_base_received(fill, symbol)
+    total = held_amount + received
+    if total <= 0:
+        return held_entry
+    # price * received + fee(quote-equivalent) == quote actually spent, whether
+    # the fee was withheld in coins or charged in quote.
+    cost = held_entry * held_amount + fill.price * received + order_fee_in_quote(fill, symbol)
     return cost / total
 
 
@@ -414,18 +427,22 @@ class TradingBot:
 
             # Update strategy position tracking (one aggregated long per symbol)
             if signal.action == "buy":
-                if held is not None and held.amount > 0:
+                # Track coins actually held: filled minus any base-asset fee.
+                received = net_base_received(order_result, signal.symbol)
+                if received <= 0:
+                    logger.warning(f"Buy of {signal.symbol} added no inventory; position unchanged")
+                elif held is not None and held.amount > 0:
                     held.entry_price = buy_entry_price(
                         held.amount, held.entry_price, order_result, signal.symbol
                     )
-                    held.amount += order_result.amount
+                    held.amount += received
                     held.current_price = order_result.price
                 else:
                     self.strategy.add_position(
                         Position(
                             symbol=signal.symbol,
                             side="long",
-                            amount=order_result.amount,
+                            amount=received,
                             entry_price=buy_entry_price(0.0, 0.0, order_result, signal.symbol),
                             current_price=order_result.price,
                             pnl=0.0,

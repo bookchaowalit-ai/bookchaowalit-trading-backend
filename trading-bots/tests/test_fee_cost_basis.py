@@ -94,13 +94,16 @@ async def test_live_buy_fee_in_base_asset_is_converted_into_cost_basis(monkeypat
 
     await b._execute_signal(_signal("buy", 0.1, 50_000.0))
     pos = b.strategy.positions["BTC/USDT"]
-    # 0.0001 BTC fee at 50,000 = 5 USDT on a 5,000 USDT purchase.
-    assert pos.entry_price == pytest.approx((5_000.0 + 5.0) / 0.1)
+    # 0.0001 BTC fee is withheld: 5,000 USDT bought 0.0999 BTC.
+    assert pos.amount == pytest.approx(0.0999)
+    assert pos.entry_price == pytest.approx(5_000.0 / 0.0999)
 
     ex.prices["BTC/USDT"] = 51_000.0
     await b._execute_signal(_signal("sell", 0.1, 51_000.0))
-    # gross 100, minus 5 buy fee, minus 5.1 sell fee (quote)
-    assert b.db.trades[-1]["pnl"] == pytest.approx(100.0 - 5.0 - 5.1)
+    # The sell is clamped to the 0.0999 BTC held; the sell fee is in quote.
+    proceeds = 0.0999 * 51_000.0
+    assert b.db.trades[-1]["amount"] == pytest.approx(0.0999)
+    assert b.db.trades[-1]["pnl"] == pytest.approx(proceeds - 5_000.0 - proceeds * 0.001)
 
 
 def test_fee_to_quote_units():
