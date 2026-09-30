@@ -2,8 +2,8 @@
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import pandas as pd
 from loguru import logger
@@ -41,6 +41,10 @@ class TradingBot:
         # Symbols whose history comes from exchange klines; ticks are never
         # mixed into those bars.
         self._ohlcv_symbols = set()
+        # Open time of the last bar each symbol was analysed on. A closed bar
+        # is analysed once: with a 60 s cycle and a long timeframe (e.g. 4h)
+        # the same bar would otherwise emit the same signal every cycle.
+        self._last_evaluated_bar: Dict[str, Any] = {}
 
         # Components
         self.db = DatabaseManager()
@@ -223,9 +227,14 @@ class TradingBot:
             # Check existing positions
             await self._manage_positions()
 
-            # Generate new signals
+            # Generate new signals, once per new bar
             for symbol in self.symbols:
+                bar = self._latest_bar(symbol)
+                if bar is not None and self._last_evaluated_bar.get(symbol) == bar:
+                    continue
                 signal = await self.strategy.analyze(symbol)
+                if bar is not None:
+                    self._last_evaluated_bar[symbol] = bar
                 if signal.action in ["buy", "sell"]:
                     await self._execute_signal(signal)
 
@@ -236,6 +245,13 @@ class TradingBot:
 
         except Exception as e:
             logger.error(f"Error in trading cycle for bot {self.name}: {e}")
+
+    def _latest_bar(self, symbol: str):
+        """Open time of the newest bar in the strategy history, or None."""
+        df = self.strategy.historical_data.get(symbol)
+        if df is None or df.empty or "timestamp" not in df.columns:
+            return None
+        return df["timestamp"].iloc[-1]
 
     async def _update_market_data(self, symbol: str):
         """Refresh the strategy's history with closed OHLCV bars.

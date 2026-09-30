@@ -9,6 +9,7 @@ import src.bot as bot_module
 from src.exchanges.base_exchange import closed_bars, ohlcv_frame, timeframe_seconds
 from src.exchanges.binance_th_exchange import BinanceThExchange
 from src.exchanges.paper_exchange import PaperExchange
+from src.strategies.base_strategy import Signal
 from src.strategies.grid_strategy import GridTradingStrategy
 from tests.fakes import FakeDB, FakeMarketExchange
 
@@ -149,3 +150,53 @@ async def test_binance_th_get_ohlcv_maps_symbol_and_interval(monkeypatch):
     df = await ex.get_ohlcv("BTC/USDT", timeframe="5m", limit=10)
     assert seen == {"symbol": "BTCUSDT", "interval": "5m", "limit": 10}
     assert df.loc[0, "volume"] == 7.0
+
+
+class _CountingStrategy(GridTradingStrategy):
+    def __init__(self, config):
+        super().__init__(config)
+        self.analysed = []
+
+    async def analyze(self, symbol, timeframe="1h"):
+        self.analysed.append(self.historical_data[symbol]["timestamp"].iloc[-1])
+        return Signal(action="buy", symbol=symbol, price=50_000.0, amount=0.001, confidence=1.0,
+                      timestamp=datetime.utcnow())
+
+
+@pytest.mark.asyncio
+async def test_each_closed_bar_is_analysed_once(monkeypatch):
+    # 4h bars: a 60 s cycle sees the same last closed bar many times.
+    step = 4 * 3600 * 1000
+    now_ms = int(datetime.utcnow().timestamp() * 1000) // step * step
+    start = now_ms - 20 * step
+    inner = _KlineExchange({"BTC/USDT": 50_000.0}, rows=_rows(19, start=start, step_ms=step))
+    b = _bot(monkeypatch, inner, {"timeframe": "4h"})
+    b.strategy = _CountingStrategy(b.config)
+
+    for _ in range(3):
+        await b._execute_trading_cycle()
+    assert len(b.strategy.analysed) == 1
+    assert len(b.exchange.orders) == 1, "the same bar must not trade on every cycle"
+    assert inner.real_orders == []
+
+    # The next bar closes: it is analysed exactly once.
+    inner.rows = _rows(20, start=start, step_ms=step)
+    for _ in range(3):
+        await b._execute_trading_cycle()
+    assert len(b.strategy.analysed) == 2
+    assert b.strategy.analysed[1] - b.strategy.analysed[0] == pd.Timedelta(hours=4)
+
+    # A forming bar is not a new closed bar.
+    inner.rows = _rows(21, start=start, step_ms=step)
+    await b._execute_trading_cycle()
+    assert len(b.strategy.analysed) == 2
+
+
+@pytest.mark.asyncio
+async def test_tick_fallback_is_analysed_every_cycle(monkeypatch):
+    inner = _KlineExchange({"BTC/USDT": 50_000.0}, rows=None)
+    b = _bot(monkeypatch, inner)
+    b.strategy = _CountingStrategy(b.config)
+    await b._execute_trading_cycle()
+    await b._execute_trading_cycle()
+    assert len(b.strategy.analysed) == 2
