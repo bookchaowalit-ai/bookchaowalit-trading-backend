@@ -1,12 +1,17 @@
 """Configuration management for trading bots."""
 
 import os
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+
+def is_live_mode(value: Optional[str]) -> bool:
+    """Return True only for an explicit ``live`` trading mode."""
+    return (value or "").strip().lower() == "live"
 
 
 class Config:
@@ -17,6 +22,9 @@ class Config:
 
     # Trading Configuration
     TRADING_MODE = os.getenv("TRADING_MODE", "paper")  # paper or live
+    # Real orders only when TRADING_MODE is exactly "live"; any other value
+    # (unset, typo, "Paper") keeps every exchange in paper/sandbox mode.
+    LIVE_TRADING = is_live_mode(TRADING_MODE)
     MAX_POSITION_SIZE = float(os.getenv("MAX_POSITION_SIZE", 1000))
     RISK_PERCENTAGE = float(os.getenv("RISK_PERCENTAGE", 2))
 
@@ -28,23 +36,23 @@ class Config:
         "binance": {
             "apiKey": os.getenv("BINANCE_API_KEY"),
             "secret": os.getenv("BINANCE_SECRET_KEY"),
-            "sandbox": TRADING_MODE == "paper",
+            "sandbox": not LIVE_TRADING,
         },
         "binance_th": {
             "apiKey": os.getenv("BINANCE_TH_API_KEY"),
             "secret": os.getenv("BINANCE_TH_SECRET_KEY"),
-            "testMode": TRADING_MODE == "paper",
+            "testMode": not LIVE_TRADING,
             "baseUrl": "https://api.binance.th",
         },
         "coinbase": {
             "apiKey": os.getenv("COINBASE_API_KEY"),
             "secret": os.getenv("COINBASE_SECRET_KEY"),
-            "sandbox": TRADING_MODE == "paper",
+            "sandbox": not LIVE_TRADING,
         },
         "bybit": {
             "apiKey": os.getenv("BYBIT_API_KEY"),
             "secret": os.getenv("BYBIT_SECRET_KEY"),
-            "testnet": TRADING_MODE == "paper",
+            "testnet": not LIVE_TRADING,
         },
         "bitkub": {
             "apiKey": os.getenv("BITKUB_API_KEY"),

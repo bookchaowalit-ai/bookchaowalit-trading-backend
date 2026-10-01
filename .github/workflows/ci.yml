@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trading-bots:
+    name: trading-bots tests (offline, paper mode)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trading-bots
+    env:
+      # Tests never touch a database or exchange; keep any accidental path in paper mode.
+      TRADING_MODE: paper
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: trading-bots/requirements-test.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-test.txt
+
+      - name: Lint (syntax errors and undefined names)
+        run: python -m ruff check . --select E9,F63,F7,F82
+
+      - name: Run tests
+        run: python -m pytest -q

@@ -19,6 +19,8 @@ class GridTradingStrategy(BaseStrategy):
         super().__init__(config)
         self.grid_levels = config.get('grid_levels', 10)
         self.grid_spacing = config.get('grid_spacing', 0.01)  # 1% spacing
+        # base_order_size is a quote-currency notional (e.g. 50 USDT per level),
+        # converted to a base quantity at each level's price.
         self.base_order_size = config.get('base_order_size', 100)
         self.active_grids: Dict[str, List[Dict]] = {}
     
@@ -70,6 +72,13 @@ class GridTradingStrategy(BaseStrategy):
                 timestamp=datetime.now()
             )
     
+    def _level_quantity(self, price: float) -> float:
+        """Base-asset quantity for one grid level, capped by max_position_size notional."""
+        if price <= 0:
+            return 0.0
+        notional = min(self.base_order_size, self.get_risk_parameters()['max_position_size'])
+        return notional / price
+
     def _initialize_grid(self, symbol: str, center_price: float):
         """Initialize grid levels around current price."""
         grid_levels = []
@@ -80,7 +89,7 @@ class GridTradingStrategy(BaseStrategy):
             grid_levels.append({
                 'type': 'buy',
                 'price': buy_price,
-                'amount': self.base_order_size,
+                'amount': self._level_quantity(buy_price),
                 'active': True
             })
         
@@ -90,7 +99,7 @@ class GridTradingStrategy(BaseStrategy):
             grid_levels.append({
                 'type': 'sell',
                 'price': sell_price,
-                'amount': self.base_order_size,
+                'amount': self._level_quantity(sell_price),
                 'active': True
             })
         

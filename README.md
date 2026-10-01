@@ -37,10 +37,22 @@ ls trading-bots
 
 ## Tests / quality
 
-This repo may lack a unified test runner. Do **not** claim CI green without
-running the specific package tests. Interview claims should point at
-`booktrading` (frontend + multi-language suite) unless this tree has its own
-passing suite.
+Offline tests (no database, no exchange calls) live in `trading-bots/tests`
+and run in CI (`.github/workflows/ci.yml`):
+
+```bash
+cd trading-bots
+python -m pip install -r requirements-test.txt
+python -m ruff check . --select E9,F63,F7,F82
+python -m pytest -q
+```
+
+## Trading mode
+
+Orders reach a real account only when `TRADING_MODE=live` is set exactly.
+Any other value (unset, `paper`, typos) wraps every exchange connector in
+`src/exchanges/paper_exchange.py`: tickers stay real, while balances and
+fills are simulated in memory.
 
 ## Related
 

@@ -1,24 +1,69 @@
 """Main trading bot implementation."""
 
 import asyncio
+import math
 import uuid
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
 import pandas as pd
 from loguru import logger
 
 from .config import Config
 from .database import DatabaseManager
-from .exchanges.base_exchange import BaseExchange
+from .exchanges.base_exchange import (
+    BaseExchange,
+    OrderResult,
+    closed_bars,
+    net_base_received,
+    order_fee_in_quote,
+    timeframe_seconds,
+)
 from .exchanges.binance_exchange import BinanceExchange
 from .exchanges.binance_th_exchange import BinanceThExchange
 from .exchanges.bitkub_exchange import BitkubExchange
 from .exchanges.innovestx_exchange import InnovestXExchange
+from .exchanges.paper_exchange import PaperExchange
 from .strategies.base_strategy import BaseStrategy, Position, Signal
 from .strategies.grid_strategy import GridTradingStrategy
 from .strategies.momentum_strategy import MomentumStrategy
 from .strategies.thai_stock_strategy import ThaiStockStrategy
+
+
+def _positive_finite(value) -> bool:
+    """True for a real number > 0; NaN/inf from a strategy or ticker is not."""
+    try:
+        return math.isfinite(value) and value > 0
+    except TypeError:
+        return False
+
+
+def buy_entry_price(held_amount: float, held_entry: float, fill: OrderResult, symbol: str) -> float:
+    """Per-unit cost basis after a buy, buy fee included.
+
+    The buy fee (converted to quote currency) is part of what the position
+    cost, so it goes into ``entry_price``; otherwise every realized PnL was
+    overstated by the buy fee. Paper and live fills share this function.
+    The quantity is the net coins received (see :func:`net_base_received`).
+    """
+    held_amount = held_amount if held_amount > 0 else 0.0
+    received = net_base_received(fill, symbol)
+    total = held_amount + received
+    if total <= 0:
+        return held_entry
+    # price * received + fee(quote-equivalent) == quote actually spent, whether
+    # the fee was withheld in coins or charged in quote.
+    cost = held_entry * held_amount + fill.price * received + order_fee_in_quote(fill, symbol)
+    return cost / total
+
+
+def realized_sell_pnl(entry_price: float, fill: OrderResult, symbol: str) -> float:
+    """PnL of selling ``fill.amount`` from a long whose cost basis is ``entry_price``.
+
+    The sell fee is deducted from the proceeds; the buy fee is already in
+    ``entry_price`` (see :func:`buy_entry_price`).
+    """
+    return (fill.price - entry_price) * fill.amount - order_fee_in_quote(fill, symbol)
 
 
 class TradingBot:
@@ -33,6 +78,17 @@ class TradingBot:
         self.strategy_name = bot_config.get("strategy", "grid")
         self.symbols = bot_config.get("symbols", [])
         self.config = bot_config.get("config", {})
+        # Strategies analyse closed OHLCV bars of this timeframe.
+        self.timeframe = self.config.get("timeframe", "1m")
+        timeframe_seconds(self.timeframe)  # fail fast on an invalid timeframe
+        self.ohlcv_limit = int(self.config.get("ohlcv_limit", 200))
+        # Symbols whose history comes from exchange klines; ticks are never
+        # mixed into those bars.
+        self._ohlcv_symbols = set()
+        # Open time of the last bar each symbol was analysed on. A closed bar
+        # is analysed once: with a 60 s cycle and a long timeframe (e.g. 4h)
+        # the same bar would otherwise emit the same signal every cycle.
+        self._last_evaluated_bar: Dict[str, Any] = {}
 
         # Components
         self.db = DatabaseManager()
@@ -153,20 +209,30 @@ class TradingBot:
         self.bot_id = await self.db.register_bot(bot_data)
 
     def _create_exchange(self) -> BaseExchange:
-        """Create exchange connector based on platform."""
+        """Create exchange connector based on platform.
+
+        Unless ``TRADING_MODE=live`` is set explicitly, the connector is wrapped
+        in ``PaperExchange`` so no order ever reaches a real account.
+        """
         exchange_config = Config.get_exchange_config(self.platform)
 
         if self.platform == "binance":
-            return BinanceExchange(exchange_config)
+            exchange = BinanceExchange(exchange_config)
         elif self.platform == "binance_th":
-            return BinanceThExchange(exchange_config)
+            exchange = BinanceThExchange(exchange_config)
         elif self.platform == "bitkub":
-            return BitkubExchange(exchange_config)
+            exchange = BitkubExchange(exchange_config)
         elif self.platform == "innovestx":
-            return InnovestXExchange(exchange_config)
+            exchange = InnovestXExchange(exchange_config)
         # Add other exchanges here
         else:
             raise ValueError(f"Unsupported platform: {self.platform}")
+
+        if not Config.LIVE_TRADING:
+            logger.info(f"Bot {self.name}: paper mode, orders are simulated")
+            return PaperExchange(exchange)
+        logger.warning(f"Bot {self.name}: LIVE trading on {self.platform}")
+        return exchange
 
     def _create_strategy(self) -> BaseStrategy:
         """Create trading strategy based on configuration."""
@@ -205,9 +271,14 @@ class TradingBot:
             # Check existing positions
             await self._manage_positions()
 
-            # Generate new signals
+            # Generate new signals, once per new bar
             for symbol in self.symbols:
+                bar = self._latest_bar(symbol)
+                if bar is not None and self._last_evaluated_bar.get(symbol) == bar:
+                    continue
                 signal = await self.strategy.analyze(symbol)
+                if bar is not None:
+                    self._last_evaluated_bar[symbol] = bar
                 if signal.action in ["buy", "sell"]:
                     await self._execute_signal(signal)
 
@@ -219,72 +290,79 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error in trading cycle for bot {self.name}: {e}")
 
-    async def _update_market_data(self, symbol: str):
-        """Update historical market data for analysis."""
-        try:
-            # Get recent price data (this would typically fetch from exchange)
-            # For now, we'll simulate with ticker data
-            ticker = await self.exchange.get_ticker(symbol)
+    def _latest_bar(self, symbol: str):
+        """Open time of the newest bar in the strategy history, or None."""
+        df = self.strategy.historical_data.get(symbol)
+        if df is None or df.empty or "timestamp" not in df.columns:
+            return None
+        return df["timestamp"].iloc[-1]
 
-            # In a real implementation, you'd fetch OHLCV data
-            # Here we'll create a simple data point
+    async def _update_market_data(self, symbol: str):
+        """Refresh the strategy's history with closed OHLCV bars.
+
+        Real klines are preferred: indicators need true open/high/low/close
+        bars, not one tick sampled per cycle. Connectors without klines fall
+        back to accumulating observed ticks. Once a symbol has kline history,
+        a failed refresh keeps the last good bars instead of appending ticks.
+        """
+        try:
+            if await self._update_from_ohlcv(symbol):
+                return
+            if symbol in self._ohlcv_symbols:
+                return
+
+            ticker = await self.exchange.get_ticker(symbol)
             current_time = datetime.now()
 
-            # Create or update DataFrame
+            new_row = pd.DataFrame(
+                {
+                    "timestamp": [current_time],
+                    "open": [ticker.last],
+                    "high": [ticker.last],
+                    "low": [ticker.last],
+                    "close": [ticker.last],
+                    "volume": [ticker.volume],
+                }
+            )
+
+            # Only real observed ticks are used. Strategies wait until enough
+            # history has accumulated instead of trading on fabricated bars.
             if symbol not in self.strategy.historical_data:
-                # Initialize with some dummy data for demonstration
-                dates = pd.date_range(end=current_time, periods=100, freq="1H")
-                base_price = ticker.last
-
-                # Generate realistic OHLCV data
-                np_random = pd.np.random
-                price_changes = np_random.normal(0, 0.02, 100)  # 2% volatility
-                prices = [base_price]
-
-                for change in price_changes[1:]:
-                    prices.append(prices[-1] * (1 + change))
-
-                df = pd.DataFrame(
-                    {
-                        "timestamp": dates,
-                        "open": prices,
-                        "high": [
-                            p * (1 + abs(np_random.normal(0, 0.01))) for p in prices
-                        ],
-                        "low": [
-                            p * (1 - abs(np_random.normal(0, 0.01))) for p in prices
-                        ],
-                        "close": prices,
-                        "volume": np_random.uniform(1000, 10000, 100),
-                    }
-                )
-
-                self.strategy.update_historical_data(symbol, df)
+                df = new_row
             else:
-                # Update existing data with new tick
-                df = self.strategy.historical_data[symbol].copy()
-                new_row = pd.DataFrame(
-                    {
-                        "timestamp": [current_time],
-                        "open": [ticker.last],
-                        "high": [ticker.last],
-                        "low": [ticker.last],
-                        "close": [ticker.last],
-                        "volume": [ticker.volume],
-                    }
+                df = pd.concat(
+                    [self.strategy.historical_data[symbol], new_row], ignore_index=True
                 )
-
-                df = pd.concat([df, new_row], ignore_index=True)
                 df = df.tail(1000)  # Keep last 1000 data points
 
-                self.strategy.update_historical_data(symbol, df)
+            self.strategy.update_historical_data(symbol, df)
 
         except Exception as e:
             logger.error(f"Failed to update market data for {symbol}: {e}")
 
+    async def _update_from_ohlcv(self, symbol: str) -> bool:
+        """Load closed klines into the strategy; True when history was set."""
+        try:
+            bars = await self.exchange.get_ohlcv(
+                symbol, timeframe=self.timeframe, limit=self.ohlcv_limit
+            )
+        except Exception as e:
+            logger.warning(f"OHLCV fetch failed for {symbol}: {e}")
+            return False
+        if bars is None:
+            return False
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        bars = closed_bars(bars, self.timeframe, now)
+        if bars.empty:
+            return False
+        self._ohlcv_symbols.add(symbol)
+        self.strategy.update_historical_data(symbol, bars)
+        return True
+
     async def _manage_positions(self):
         """Manage existing positions."""
-        for symbol, position in self.strategy.positions.items():
+        # Iterate over a snapshot: closing a position mutates the dict.
+        for symbol, position in list(self.strategy.positions.items()):
             try:
                 # Get current price
                 ticker = await self.exchange.get_ticker(symbol)
@@ -307,17 +385,31 @@ class TradingBot:
                 f"Executing {signal.action} signal for {signal.symbol} at ${signal.price:.4f}"
             )
 
-            # Check balance before trading
-            balance = await self.exchange.get_balance()
+            if not (_positive_finite(signal.amount) and _positive_finite(signal.price)):
+                logger.warning(f"Skipping {signal.action} for {signal.symbol}: invalid amount/price")
+                return
+
+            held = self.strategy.positions.get(signal.symbol)
+            amount = signal.amount
+            if signal.action == "sell":
+                # Spot, long-only: never sell inventory the bot does not hold.
+                if held is None or held.amount <= 0:
+                    logger.info(f"Skipping sell for {signal.symbol}: no open position")
+                    return
+                amount = min(amount, held.amount)
 
             # Execute the order
             order_result = await self.exchange.place_order(
                 symbol=signal.symbol,
                 side=signal.action,
-                amount=signal.amount,
+                amount=amount,
                 price=signal.price,
                 order_type="market",
             )
+
+            realized_pnl = 0.0
+            if signal.action == "sell":
+                realized_pnl = realized_sell_pnl(held.entry_price, order_result, signal.symbol)
 
             # Record trade in database
             trade_data = {
@@ -327,24 +419,44 @@ class TradingBot:
                 "side": signal.action,
                 "amount": order_result.amount,
                 "price": order_result.price,
-                "pnl": 0.0,  # Will be calculated later
+                "pnl": realized_pnl,
                 "timestamp": datetime.utcnow().isoformat(),
             }
 
             await self.db.insert_trade(trade_data)
 
-            # Update strategy position tracking
+            # Update strategy position tracking (one aggregated long per symbol)
             if signal.action == "buy":
-                position = Position(
-                    symbol=signal.symbol,
-                    side="long",
-                    amount=order_result.amount,
-                    entry_price=order_result.price,
-                    current_price=order_result.price,
-                    pnl=0.0,
-                    timestamp=datetime.now(),
-                )
-                self.strategy.add_position(position)
+                # Track coins actually held: filled minus any base-asset fee.
+                received = net_base_received(order_result, signal.symbol)
+                if received <= 0:
+                    logger.warning(f"Buy of {signal.symbol} added no inventory; position unchanged")
+                elif held is not None and held.amount > 0:
+                    held.entry_price = buy_entry_price(
+                        held.amount, held.entry_price, order_result, signal.symbol
+                    )
+                    held.amount += received
+                    held.current_price = order_result.price
+                else:
+                    self.strategy.add_position(
+                        Position(
+                            symbol=signal.symbol,
+                            side="long",
+                            amount=received,
+                            entry_price=buy_entry_price(0.0, 0.0, order_result, signal.symbol),
+                            current_price=order_result.price,
+                            pnl=0.0,
+                            timestamp=datetime.now(),
+                        )
+                    )
+            else:
+                held.amount -= order_result.amount
+                if held.amount <= 1e-12:
+                    self.strategy.remove_position(signal.symbol)
+                self.performance_metrics["total_pnl"] += realized_pnl
+                self.performance_metrics["today_pnl"] += realized_pnl
+                if realized_pnl > 0:
+                    self.performance_metrics["winning_trades"] += 1
 
             # Update performance metrics
             self.performance_metrics["total_trades"] += 1
@@ -367,16 +479,18 @@ class TradingBot:
                 symbol=position.symbol,
                 side=close_side,
                 amount=position.amount,
+                # Reference price for connectors whose market-order response
+                # carries no execution price; market orders ignore it.
+                price=position.current_price,
                 order_type="market",
             )
 
-            # Calculate P&L
+            # Calculate P&L (entry_price already carries the buy fee)
             if position.side == "long":
-                pnl = (order_result.price - position.entry_price) * position.amount
+                pnl = realized_sell_pnl(position.entry_price, order_result, position.symbol)
             else:
                 pnl = (position.entry_price - order_result.price) * position.amount
-
-            pnl -= order_result.fees  # Subtract fees
+                pnl -= order_fee_in_quote(order_result, position.symbol)
 
             # Record closing trade
             trade_data = {

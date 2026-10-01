@@ -1,17 +1,97 @@
 """Bitkub exchange connector for trading bots."""
 
-import asyncio
 import hashlib
 import hmac
 import json
 import time
-from datetime import datetime
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 from loguru import logger
 
-from .base_exchange import Balance, BaseExchange, OrderResult, Ticker
+from .base_exchange import Balance, BaseExchange, OrderResult, Ticker, utc_from_ms, utc_now
+
+
+# Bitkub quotes every market in THB with 2 decimals; base assets use up to 8.
+THB_QUANT = Decimal("0.01")
+BASE_QUANT = Decimal("0.00000001")
+# Bitkub rejects orders below 10 THB of notional.
+BITKUB_MIN_ORDER_THB = Decimal("10")
+
+
+def bitkub_order_payload(
+    symbol: str,
+    side: str,
+    base_amount: float,
+    reference_price: float,
+    order_type: str = "market",
+    limit_price: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Build a Bitkub place-bid / place-ask body from a *base-asset* quantity.
+
+    Every strategy and the ``BaseExchange.place_order`` contract speak in base
+    units (e.g. 0.001 BTC). Bitkub does not: for ``place-bid`` (buy) ``amt`` is
+    the THB to spend, for ``place-ask`` (sell) ``amt`` is the base quantity.
+    Sending a base quantity as a bid ``amt`` would try to buy 0.001 THB of BTC;
+    sending THB as an ask ``amt`` would try to sell thousands of coins.
+
+    Buys convert with ``base_amount * price`` where price is the limit rate for
+    limit orders, else ``reference_price`` (the current ask). Amounts round
+    *down* so an order never spends or sells more than requested.
+    """
+    side_l = side.lower()
+    if side_l not in ("buy", "sell"):
+        raise ValueError(f"unsupported side {side!r}")
+    if order_type not in ("market", "limit"):
+        raise ValueError(f"unsupported order type {order_type!r}")
+    base = Decimal(str(base_amount))
+    if base <= 0:
+        raise ValueError("order amount must be a positive base-asset quantity")
+    if order_type == "limit":
+        if limit_price is None or limit_price <= 0:
+            raise ValueError("limit orders need a positive price")
+        rate = Decimal(str(limit_price))
+    else:
+        if reference_price is None or reference_price <= 0:
+            raise ValueError("market orders need a positive reference price")
+        rate = Decimal(str(reference_price))
+
+    notional_thb = (base * rate).quantize(THB_QUANT, rounding=ROUND_DOWN)
+    if notional_thb < BITKUB_MIN_ORDER_THB:
+        raise ValueError(
+            f"order notional {notional_thb} THB is below the Bitkub minimum of {BITKUB_MIN_ORDER_THB} THB"
+        )
+
+    if side_l == "buy":
+        body: Dict[str, Any] = {"sym": symbol, "amt": float(notional_thb), "typ": order_type}
+    else:
+        quantity = base.quantize(BASE_QUANT, rounding=ROUND_DOWN)
+        body = {"sym": symbol, "amt": float(quantity), "typ": order_type}
+    body["rat"] = float(rate) if order_type == "limit" else 0
+    return body
+
+
+def order_result_price(
+    response: dict, order_type: str, limit_price: Optional[float], reference_price: float
+) -> float:
+    """Price to record for a freshly placed Bitkub order.
+
+    Position and PnL accounting use ``OrderResult.price`` as the entry price,
+    so it must never be 0 for an order that was accepted. Preference order:
+    the rate Bitkub echoes back (``rat``) when it is positive, then the limit
+    price for limit orders, then the ticker reference used to size a market
+    order (ask for buys, bid for sells, falling back to last).
+    """
+    try:
+        echoed = float(response.get("rat") or 0)
+    except (TypeError, ValueError):
+        echoed = 0.0
+    if echoed > 0:
+        return echoed
+    if order_type == "limit" and limit_price:
+        return float(limit_price)
+    return float(reference_price or 0)
 
 
 class BitkubExchange(BaseExchange):
@@ -217,7 +297,7 @@ class BitkubExchange(BaseExchange):
                 ask=float(data.get("lowestAsk", 0)),
                 last=float(data.get("last", 0)),
                 volume=float(data.get("baseVolume", 0)),
-                timestamp=datetime.now(),
+                timestamp=utc_now(),
             )
 
         except Exception as e:
@@ -232,26 +312,21 @@ class BitkubExchange(BaseExchange):
         price: float = None,
         order_type: str = "market",
     ) -> OrderResult:
-        """Place a trading order on Bitkub."""
+        """Place a trading order on Bitkub.
+
+        ``amount`` is always a base-asset quantity (the ``BaseExchange``
+        contract); ``bitkub_order_payload`` converts buys to THB.
+        """
         try:
-            if side.lower() == "buy":
-                endpoint = "/api/market/place-bid"
-                order_data = {
-                    "sym": symbol,
-                    "amt": amount,  # Amount in quote currency (THB)
-                    "typ": order_type,
-                }
-                if price and order_type == "limit":
-                    order_data["rat"] = price
-            else:  # sell
-                endpoint = "/api/market/place-ask"
-                order_data = {
-                    "sym": symbol,
-                    "amt": amount,  # Amount in base currency
-                    "typ": order_type,
-                }
-                if price and order_type == "limit":
-                    order_data["rat"] = price
+            endpoint = "/api/market/place-bid" if side.lower() == "buy" else "/api/market/place-ask"
+            reference_price = 0.0
+            if order_type != "limit":
+                ticker = await self.get_ticker(symbol)
+                reference_price = ticker.ask if side.lower() == "buy" else ticker.bid
+                reference_price = reference_price or ticker.last
+            order_data = bitkub_order_payload(
+                symbol, side, amount, reference_price, order_type=order_type, limit_price=price
+            )
 
             result = await self._make_request("POST", endpoint, order_data)
             order_result = result.get("result", {})
@@ -261,11 +336,11 @@ class BitkubExchange(BaseExchange):
                 symbol=symbol,
                 side=side,
                 amount=amount,
-                price=price or 0,
+                price=order_result_price(order_result, order_type, price, reference_price),
                 status="pending",  # Bitkub orders start as pending
                 filled_amount=0.0,
                 fees=0.0,
-                timestamp=datetime.now(),
+                timestamp=utc_now(),
             )
 
         except Exception as e:
@@ -285,7 +360,7 @@ class BitkubExchange(BaseExchange):
             try:
                 await self._make_request("POST", "/api/market/cancel-order", data)
                 return True
-            except:
+            except Exception:
                 # If failed, try as sell order
                 data["sd"] = "sell"
                 await self._make_request("POST", "/api/market/cancel-order", data)
@@ -335,9 +410,7 @@ class BitkubExchange(BaseExchange):
                         status="open",
                         filled_amount=float(order_data.get("filled", 0)),
                         fees=float(order_data.get("fee", 0)),
-                        timestamp=datetime.fromtimestamp(
-                            order_data.get("ts", 0) / 1000
-                        ),
+                        timestamp=utc_from_ms(order_data.get("ts", 0)),
                     )
                 )
 
@@ -375,9 +448,7 @@ class BitkubExchange(BaseExchange):
                         status=order_data.get("status", ""),
                         filled_amount=float(order_data.get("filled", 0)),
                         fees=float(order_data.get("fee", 0)),
-                        timestamp=datetime.fromtimestamp(
-                            order_data.get("ts", 0) / 1000
-                        ),
+                        timestamp=utc_from_ms(order_data.get("ts", 0)),
                     )
                 )
 
