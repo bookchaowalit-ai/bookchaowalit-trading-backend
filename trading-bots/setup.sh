@@ -21,7 +21,7 @@ fi
 if grep -q "test_binance_api_key" .env; then
     echo "⚠️  Warning: API keys still contain placeholder values!"
     echo "Please rotate your API keys before running this script."
-    echo "See: ~/solo-empire/docs/ACTION-REQUIRED-SECURITY-TESTING.md"
+    echo "See: docs/ACTION-REQUIRED-SECURITY-TESTING.md in the operations repository"
     read -p "Continue anyway? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
